@@ -64,6 +64,10 @@ jobs:
           sudo npm install -g redoc-cli
           printf "\n# Generating manual\n"
           sudo bash mycodo/scripts/generate_manual_api.sh
+      - name: Type checking with mypy
+        run: |
+          env/bin/pip install mypy types-requests types-python-dateutil
+          env/bin/mypy --config-file=mypy.ini mycodo/databases/ mycodo/utils/ || true
       - name: Test with pytest
         run: |
           cd mycodo && ../env/bin/pytest -W ignore::DeprecationWarning -s tests/software_tests
