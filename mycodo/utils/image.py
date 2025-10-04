@@ -21,12 +21,21 @@
 #
 #  Contact at kylegabriel.com
 import logging
+from typing import List, Optional
 
 logger = logging.getLogger("mycodo.utils.image")
 
 
 def generate_thermal_image_from_pixels(
-        pixels, nx, ny, path_file, rotate_ccw=270, scale=25, temp_min=None, temp_max=None):
+        pixels: List[float],
+        nx: int,
+        ny: int,
+        path_file: str,
+        rotate_ccw: int = 270,
+        scale: int = 25,
+        temp_min: Optional[float] = None,
+        temp_max: Optional[float] = None
+) -> None:
     """Generate and save image from list of pixels."""
     from colour import Color
     from PIL import Image
@@ -47,10 +56,10 @@ def generate_thermal_image_from_pixels(
     colors = [(int(c.red * 255), int(c.green * 255), int(c.blue * 255)) for c in colors]
 
     # some utility functions
-    def constrain(val, min_val, max_val):
+    def constrain(val: float, min_val: float, max_val: float) -> float:
         return min(max_val, max(min_val, val))
 
-    def map_it(x, in_min, in_max, out_min, out_max):
+    def map_it(x: float, in_min: float, in_max: float, out_min: float, out_max: float) -> float:
         return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min
 
     # map sensor readings to color map

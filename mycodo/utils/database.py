@@ -2,7 +2,7 @@
 import logging
 import time
 from sqlite3 import OperationalError
-from typing import Any, Optional, Type, TypeVar
+from typing import Any, Optional
 
 import sqlalchemy
 
@@ -11,11 +11,9 @@ from mycodo.databases.utils import session_scope
 
 logger = logging.getLogger("mycodo.database")
 
-T = TypeVar('T')
-
 
 def db_retrieve_table(
-    table: Type[T],
+    table: Any,
     entry: Optional[str] = None,
     unique_id: Optional[str] = None
 ) -> Any:
@@ -42,7 +40,7 @@ def db_retrieve_table(
 
 
 def db_retrieve_table_daemon(
-        table: Type[T],
+        table: Any,
         entry: Optional[str] = None,
         device_id: Optional[int] = None,
         unique_id: Optional[str] = None,
