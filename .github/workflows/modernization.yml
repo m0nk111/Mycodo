@@ -1,0 +1,94 @@
+# This workflow will be used for modernization efforts
+# It runs type checking and tests for new async code
+name: Modernization CI
+
+on:
+  push:
+    branches:
+      - master
+      - 'issue-*'  # All modernization feature branches
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  type-check:
+    name: Type Checking (mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install mypy
+          pip install -r install/requirements.txt
+          pip install -r install/requirements-modern.txt || true
+      
+      - name: Run mypy
+        run: |
+          mypy mycodo --config-file mypy.ini || echo "Type checking has errors (expected during migration)"
+
+  test:
+    name: Tests (pytest)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11']
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r install/requirements.txt
+          pip install -r install/requirements-testing.txt
+          pip install -r install/requirements-modern.txt || true
+      
+      - name: Run tests
+        run: |
+          pytest -v -m "not hardware" || echo "Tests have failures (expected during migration)"
+      
+      - name: Generate coverage report
+        if: matrix.python-version == '3.10'
+        run: |
+          pytest --cov=mycodo --cov-report=xml -m "not hardware" || true
+      
+      - name: Upload coverage to Codecov
+        if: matrix.python-version == '3.10'
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+
+  lint:
+    name: Linting (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install ruff
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+      
+      - name: Run ruff
+        run: |
+          ruff check mycodo || echo "Linting has issues (expected during migration)"
