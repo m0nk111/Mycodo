@@ -8,6 +8,7 @@ Controller.
 All Controllers should inherit from this class and overwrite methods that raise
 NotImplementedErrors
 """
+import asyncio
 import logging
 import time
 import timeit
@@ -91,6 +92,48 @@ class AbstractController(AbstractBaseController):
             self.thread_shutdown_timer = timeit.default_timer()
         finally:
             self.run_finally()
+            self.running = False
+            if self.thread_shutdown_timer:
+                dur = (timeit.default_timer() - self.thread_shutdown_timer) * 1000
+                self.logger.info(f"Deactivated in {dur:.1f} ms")
+            else:
+                self.logger.error("Deactivated unexpectedly")
+
+    async def async_run(self):
+        """Async version of the run loop for controllers."""
+        try:
+            try:
+                if hasattr(self, 'async_initialize_variables'):
+                    await self.async_initialize_variables()
+                else:
+                    self.initialize_variables()
+            except Exception as except_msg:
+                self.logger.exception(f"initialize_variables() Exception: {except_msg}")
+
+            dur = (timeit.default_timer() - self.thread_startup_timer) * 1000
+            self.logger.info(f"Activated in {dur:.1f} ms")
+
+            while self.running:
+                try:
+                    if hasattr(self, 'async_loop'):
+                        await self.async_loop()
+                    else:
+                        self.loop()
+                except Pyro5.errors.TimeoutError:
+                    self.logger.exception("Pyro5 TimeoutError")
+                except Exception:
+                    self.logger.exception("loop() Error")
+                finally:
+                    await asyncio.sleep(self.sample_rate)
+
+        except Exception:
+            self.logger.exception("Run Error")
+            self.thread_shutdown_timer = timeit.default_timer()
+        finally:
+            if hasattr(self, 'async_run_finally'):
+                await self.async_run_finally()
+            else:
+                self.run_finally()
             self.running = False
             if self.thread_shutdown_timer:
                 dur = (timeit.default_timer() - self.thread_shutdown_timer) * 1000

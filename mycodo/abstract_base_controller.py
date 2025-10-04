@@ -12,6 +12,7 @@ controllers/base_controller.py
 inputs/base_input.py
 outputs/base_output.py
 """
+import asyncio
 import json
 import logging
 import time
@@ -45,9 +46,37 @@ class AbstractBaseController(object):
 
         self.channels_conversion = {}
         self.channels_measurement = {}
+        self._event_loop = None
+        self._is_async_initialized = False
 
     def initialize(self):
         pass
+
+    async def async_initialize(self):
+        """Async initialization method for controllers that need async setup."""
+        # Call sync initialize for backward compatibility
+        self.initialize()
+        self._is_async_initialized = True
+
+    async def async_start(self):
+        """Start the controller asynchronously."""
+        if not self._is_async_initialized:
+            await self.async_initialize()
+
+    async def async_stop(self):
+        """Stop the controller asynchronously."""
+        pass
+
+    async def async_health_check(self):
+        """Check the health status of the controller.
+        
+        Returns:
+            dict: Health status information including 'healthy' (bool) and 'message' (str)
+        """
+        return {
+            'healthy': True,
+            'message': 'Controller is running'
+        }
 
     def try_initialize(self, tries=3, wait_sec=5):
         """Try to run initialize() for the controller several times with a pause between tries"""
@@ -59,6 +88,21 @@ class AbstractBaseController(object):
                 if i + 1 < tries:
                     self.logger.exception(f"Error initializing, trying again in {wait_sec} seconds: {err}")
                     time.sleep(wait_sec)
+                else:  # Last try
+                    self.logger.exception(
+                        f"Initialization errored {tries} times; giving up. Maybe the following traceback "
+                        f"can help diagnose the issue.")
+
+    async def async_try_initialize(self, tries=3, wait_sec=5):
+        """Async version: Try to run async_initialize() for the controller several times with a pause between tries"""
+        for i in range(tries):
+            try:
+                await self.async_initialize()
+                break
+            except Exception as err:
+                if i + 1 < tries:
+                    self.logger.exception(f"Error initializing, trying again in {wait_sec} seconds: {err}")
+                    await asyncio.sleep(wait_sec)
                 else:  # Last try
                     self.logger.exception(
                         f"Initialization errored {tries} times; giving up. Maybe the following traceback "
