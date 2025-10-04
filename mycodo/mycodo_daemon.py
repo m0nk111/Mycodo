@@ -63,8 +63,15 @@ from mycodo.utils.github_release_info import MycodoRelease
 from mycodo.utils.stats import (add_update_csv, recreate_stat_file,
                                 return_stat_file_dict, send_anonymous_stats)
 from mycodo.utils.tools import generate_output_usage_report, next_schedule
+from mycodo.utils.logging_config import setup_structlog, get_logger
 
 
+# Initialize structured logging for daemon
+# Use JSON logs in production
+json_logs = os.environ.get('MYCODO_JSON_LOGS', 'false').lower() == 'true'
+log_level_name = os.environ.get('MYCODO_LOG_LEVEL', 'INFO')
+
+# For backward compatibility, also set up standard logging
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
 logHandler = logging.FileHandler(DAEMON_LOG_FILE)
 logHandler.setLevel(logging.DEBUG)
@@ -73,6 +80,13 @@ logHandler.setFormatter(formatter)
 logger = logging.getLogger('mycodo')
 logger.setLevel(logging.DEBUG)
 logger.addHandler(logHandler)
+
+# Also set up structlog for structured logging capabilities
+try:
+    setup_structlog(json_logs=json_logs, log_level=log_level_name)
+except Exception:
+    # If structlog setup fails, fall back to standard logging
+    pass
 
 
 class DaemonController:
