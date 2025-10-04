@@ -12,6 +12,9 @@ env/
 .upgrade
 statistics.csv
 statistics.id
+.env
+.env.local
+.env.*.local
 
 # VS Code
 .vscode/

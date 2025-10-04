@@ -13,15 +13,40 @@ from flask_babel import lazy_gettext as lg
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 from config_translations import TRANSLATIONS as T
 
-MYCODO_VERSION = '8.16.2'
-ALEMBIC_VERSION = '5966b3569c89'
+# =============================================================================
+# Modern Configuration Management with Pydantic Settings
+# =============================================================================
+# Initialize Pydantic settings for type-safe configuration management
+# These settings can be overridden via environment variables or .env file
+try:
+    from mycodo.settings import get_settings
+    _settings = get_settings()
+except ImportError:
+    # Fallback if pydantic-settings not installed yet
+    _settings = None
 
+# =============================================================================
+# Version Information
+# =============================================================================
+if _settings:
+    MYCODO_VERSION = _settings.version
+    ALEMBIC_VERSION = _settings.alembic_version
+else:
+    MYCODO_VERSION = '8.16.2'
+    ALEMBIC_VERSION = '5966b3569c89'
+
+# =============================================================================
+# Service Configuration
+# =============================================================================
 # FORCE UPGRADE MASTER
 # Set True to enable upgrading to the master branch of the Mycodo repository.
 # Set False to enable upgrading to the latest Release version (default).
 # Do not use this feature unless you know what you're doing or have been
 # instructed to do so, as it can really mess up your system.
-FORCE_UPGRADE_MASTER = False
+if _settings:
+    FORCE_UPGRADE_MASTER = _settings.services.force_upgrade_master
+else:
+    FORCE_UPGRADE_MASTER = False
 
 # Final release for each major version number
 # Used to determine proper upgrade page to display
@@ -29,14 +54,28 @@ FINAL_RELEASES = ['5.7.3', '6.4.7', '7.10.0']
 
 # Flask Profiler
 # Accessed at https://127.0.0.1/mycodo-flask-profiler
-ENABLE_FLASK_PROFILER = False
+if _settings:
+    ENABLE_FLASK_PROFILER = _settings.services.enable_flask_profiler
+else:
+    ENABLE_FLASK_PROFILER = False
 
+# =============================================================================
+# Path Configuration
+# =============================================================================
 # Install path (the parent directory of this file)
-INSTALL_DIRECTORY = os.path.abspath(os.path.dirname(os.path.realpath(__file__)) + '/..')
+if _settings:
+    INSTALL_DIRECTORY = _settings.paths.install_directory
+else:
+    INSTALL_DIRECTORY = os.path.abspath(os.path.dirname(os.path.realpath(__file__)) + '/..')
 
 # Settings database
-DATABASE_PATH = os.path.join(INSTALL_DIRECTORY, 'databases')
-DATABASE_NAME = "mycodo.db"
+if _settings:
+    DATABASE_PATH = _settings.paths.database_path
+    DATABASE_NAME = _settings.database.database_name
+else:
+    DATABASE_PATH = os.path.join(INSTALL_DIRECTORY, 'databases')
+    DATABASE_NAME = "mycodo.db"
+
 SQL_DATABASE_MYCODO = os.path.join(DATABASE_PATH, DATABASE_NAME)
 ALEMBIC_PATH = os.path.join(INSTALL_DIRECTORY, 'alembic_db')
 ALEMBIC_UPGRADE_POST = os.path.join(ALEMBIC_PATH, 'alembic_post_upgrade_versions')
@@ -48,13 +87,22 @@ except:
     MYCODO_DB_PATH = f'sqlite:///{SQL_DATABASE_MYCODO}'
 
 # Misc paths
-PATH_1WIRE = '/sys/bus/w1/devices/'
-PATH_CONTROLLERS = os.path.join(INSTALL_DIRECTORY, 'mycodo/controllers')
-PATH_FUNCTIONS = os.path.join(INSTALL_DIRECTORY, 'mycodo/functions')
-PATH_ACTIONS = os.path.join(INSTALL_DIRECTORY, 'mycodo/actions')
-PATH_INPUTS = os.path.join(INSTALL_DIRECTORY, 'mycodo/inputs')
-PATH_OUTPUTS = os.path.join(INSTALL_DIRECTORY, 'mycodo/outputs')
-PATH_WIDGETS = os.path.join(INSTALL_DIRECTORY, 'mycodo/widgets')
+if _settings:
+    PATH_1WIRE = _settings.paths.path_1wire
+    PATH_CONTROLLERS = _settings.paths.controllers_path
+    PATH_FUNCTIONS = _settings.paths.functions_path
+    PATH_ACTIONS = _settings.paths.actions_path
+    PATH_INPUTS = _settings.paths.inputs_path
+    PATH_OUTPUTS = _settings.paths.outputs_path
+    PATH_WIDGETS = _settings.paths.widgets_path
+else:
+    PATH_1WIRE = '/sys/bus/w1/devices/'
+    PATH_CONTROLLERS = os.path.join(INSTALL_DIRECTORY, 'mycodo/controllers')
+    PATH_FUNCTIONS = os.path.join(INSTALL_DIRECTORY, 'mycodo/functions')
+    PATH_ACTIONS = os.path.join(INSTALL_DIRECTORY, 'mycodo/actions')
+    PATH_INPUTS = os.path.join(INSTALL_DIRECTORY, 'mycodo/inputs')
+    PATH_OUTPUTS = os.path.join(INSTALL_DIRECTORY, 'mycodo/outputs')
+    PATH_WIDGETS = os.path.join(INSTALL_DIRECTORY, 'mycodo/widgets')
 PATH_FUNCTIONS_CUSTOM = os.path.join(PATH_FUNCTIONS, 'custom_functions')
 PATH_ACTIONS_CUSTOM = os.path.join(PATH_ACTIONS, 'custom_actions')
 PATH_INPUTS_CUSTOM = os.path.join(PATH_INPUTS, 'custom_inputs')
@@ -75,28 +123,51 @@ PATH_SETTINGS_BACKUP = os.path.join(INSTALL_DIRECTORY, 'mycodo/backup_settings')
 USAGE_REPORTS_PATH = os.path.join(INSTALL_DIRECTORY, 'output_usage_reports')
 DEPENDENCY_INIT_FILE = os.path.join(INSTALL_DIRECTORY, '.dependency')
 UPGRADE_INIT_FILE = os.path.join(INSTALL_DIRECTORY, '.upgrade')
-BACKUP_PATH = '/var/Mycodo-backups'  # Where Mycodo backups are stored
 
+if _settings:
+    BACKUP_PATH = _settings.paths.backup_path
+else:
+    BACKUP_PATH = '/var/Mycodo-backups'  # Where Mycodo backups are stored
+
+# =============================================================================
+# Logging Configuration
+# =============================================================================
 # Log files
-LOG_PATH = '/var/log/mycodo'  # Where generated logs are stored
-LOGIN_LOG_FILE = os.path.join(LOG_PATH, 'login.log')
-DAEMON_LOG_FILE = os.path.join(LOG_PATH, 'mycodo.log')
-KEEPUP_LOG_FILE = os.path.join(LOG_PATH, 'mycodokeepup.log')
-BACKUP_LOG_FILE = os.path.join(LOG_PATH, 'mycodobackup.log')
-DEPENDENCY_LOG_FILE = os.path.join(LOG_PATH, 'mycododependency.log')
+if _settings:
+    LOG_PATH = _settings.logging.path
+    LOGIN_LOG_FILE = _settings.logging.login_log_file
+    DAEMON_LOG_FILE = _settings.logging.daemon_log_file
+    KEEPUP_LOG_FILE = _settings.logging.keepup_log_file
+    BACKUP_LOG_FILE = _settings.logging.backup_log_file
+    DEPENDENCY_LOG_FILE = _settings.logging.dependency_log_file
+    UPGRADE_LOG_FILE = _settings.logging.upgrade_log_file
+else:
+    LOG_PATH = '/var/log/mycodo'  # Where generated logs are stored
+    LOGIN_LOG_FILE = os.path.join(LOG_PATH, 'login.log')
+    DAEMON_LOG_FILE = os.path.join(LOG_PATH, 'mycodo.log')
+    KEEPUP_LOG_FILE = os.path.join(LOG_PATH, 'mycodokeepup.log')
+    BACKUP_LOG_FILE = os.path.join(LOG_PATH, 'mycodobackup.log')
+    DEPENDENCY_LOG_FILE = os.path.join(LOG_PATH, 'mycododependency.log')
+    UPGRADE_LOG_FILE = os.path.join(LOG_PATH, 'mycodoupgrade.log')
+
 IMPORT_LOG_FILE = os.path.join(LOG_PATH, 'mycodoimport.log')
-UPGRADE_LOG_FILE = os.path.join(LOG_PATH, 'mycodoupgrade.log')
 UPGRADE_TMP_LOG_FILE = '/tmp/mycodoupgrade.log'
 RESTORE_LOG_FILE = os.path.join(LOG_PATH, 'mycodorestore.log')
 HTTP_ACCESS_LOG_FILE = '/var/log/nginx/access.log'
 HTTP_ERROR_LOG_FILE = '/var/log/nginx/error.log'
 
 # Lock files
-LOCK_PATH = '/var/lock'
+if _settings:
+    LOCK_PATH = _settings.paths.lock_path
+else:
+    LOCK_PATH = '/var/lock'
 LOCK_FILE_STREAM = os.path.join(LOCK_PATH, 'mycodo-camera-stream.pid')
 
 # Run files
-RUN_PATH = '/var/run'
+if _settings:
+    RUN_PATH = _settings.paths.run_path
+else:
+    RUN_PATH = '/var/run'
 FRONTEND_PID_FILE = os.path.join(RUN_PATH, 'mycodoflask.pid')
 
 # Remote admin
@@ -104,39 +175,77 @@ STORED_SSL_CERTIFICATE_PATH = os.path.join(
     INSTALL_DIRECTORY, 'mycodo/mycodo_flask/ssl_certs/remote_admin')
 
 # Cameras
-PATH_CAMERAS = os.path.join(INSTALL_DIRECTORY, 'cameras')
+if _settings:
+    PATH_CAMERAS = _settings.paths.cameras_path
+else:
+    PATH_CAMERAS = os.path.join(INSTALL_DIRECTORY, 'cameras')
 
 # Notes
-PATH_NOTE_ATTACHMENTS = os.path.join(INSTALL_DIRECTORY, 'note_attachments')
+if _settings:
+    PATH_NOTE_ATTACHMENTS = _settings.paths.note_attachments_path
+else:
+    PATH_NOTE_ATTACHMENTS = os.path.join(INSTALL_DIRECTORY, 'note_attachments')
 
+# =============================================================================
+# Docker & Service Configuration
+# =============================================================================
 # Determine if running in a Docker container
-DOCKER_CONTAINER = os.environ.get('DOCKER_CONTAINER', False) == 'TRUE'
+if _settings:
+    DOCKER_CONTAINER = _settings.services.docker_container
+else:
+    DOCKER_CONTAINER = os.environ.get('DOCKER_CONTAINER', False) == 'TRUE'
 
 # Pyro5 URI/host, used by mycodo_client.py
-if DOCKER_CONTAINER:
-    PYRO_URI = 'PYRO:mycodo.pyro_server@mycodo_daemon:9080'
+if _settings:
+    PYRO_URI = _settings.services.pyro_uri_computed
 else:
-    PYRO_URI = 'PYRO:mycodo.pyro_server@127.0.0.1:9080'
+    if DOCKER_CONTAINER:
+        PYRO_URI = 'PYRO:mycodo.pyro_server@mycodo_daemon:9080'
+    else:
+        PYRO_URI = 'PYRO:mycodo.pyro_server@127.0.0.1:9080'
 
+# =============================================================================
+# Statistics Service Configuration
+# =============================================================================
 # Anonymous statistics
-STATS_INTERVAL = 86400
-STATS_HOST = 'fungi.kylegabriel.com'
-STATS_PORT = 8086
+if _settings:
+    STATS_INTERVAL = _settings.services.stats_interval
+    STATS_HOST = _settings.services.stats_host
+    STATS_PORT = _settings.services.stats_port
+    STATS_DATABASE = _settings.services.stats_database
+else:
+    STATS_INTERVAL = 86400
+    STATS_HOST = 'fungi.kylegabriel.com'
+    STATS_PORT = 8086
+    STATS_DATABASE = 'mycodo_stats'
+
 STATS_USER = 'mycodo_stats'
 STATS_PASSWORD = 'Io8Nasr5JJDdhPOj32222'
-STATS_DATABASE = 'mycodo_stats'
 STATS_CSV = os.path.join(INSTALL_DIRECTORY, 'statistics.csv')
 ID_FILE = os.path.join(INSTALL_DIRECTORY, 'statistics.id')
 
+# =============================================================================
+# Security Configuration
+# =============================================================================
 # Login restrictions
-LOGIN_ATTEMPTS = 5
-LOGIN_BAN_SECONDS = 600  # 10 minutes
+if _settings:
+    LOGIN_ATTEMPTS = _settings.security.login_attempts
+    LOGIN_BAN_SECONDS = _settings.security.login_ban_seconds
+else:
+    LOGIN_ATTEMPTS = 5
+    LOGIN_BAN_SECONDS = 600  # 10 minutes
 
 # Check for upgrade every 2 days (if enabled)
-UPGRADE_CHECK_INTERVAL = 172800
+if _settings:
+    UPGRADE_CHECK_INTERVAL = _settings.services.upgrade_check_interval
+else:
+    UPGRADE_CHECK_INTERVAL = 172800
 
 TAGS_URL = 'https://api.github.com/repos/kizniche/Mycodo/git/refs/tags'
 
+# =============================================================================
+# UI Configuration (Languages, Themes, etc.)
+# =============================================================================
 LANGUAGES = {
     'en': 'English',
     'de': 'Deutsche (German)',
