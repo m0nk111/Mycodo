@@ -4,8 +4,23 @@
 #  and the following mock work will patch them so that we can pretend
 #  that we have them installed:
 from mock import patch, MagicMock
+import sys
+import os
+
+# Add mocks directory to path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from mocks.hardware_mocks import MockGPIO, MockI2C
+
+# Create enhanced mocks for hardware libraries
+mock_rpi = MagicMock()
+mock_rpi.GPIO = MockGPIO()
+
+mock_smbus2 = MagicMock()
+mock_smbus2.SMBus = MockI2C
+
 patch.dict("sys.modules",
-           RPi=MagicMock(),
+           RPi=mock_rpi,
            picamera=MagicMock(),
            AM2315=MagicMock(),
            tentacle_pi=MagicMock(),
@@ -13,15 +28,13 @@ patch.dict("sys.modules",
            Adafruit_TMP=MagicMock(),
            w1thermsensor=MagicMock(),
            sht_sensor=MagicMock(),
-           smbus2=MagicMock(),
+           smbus2=mock_smbus2,
            ).start()
 
 import pytest
 import tempfile
 import secrets
 import shutil
-import os
-import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.realpath(__file__), '../../../..')))
 
