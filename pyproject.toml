@@ -1,0 +1,37 @@
+[tool.pyright]
+# Pyright configuration for VS Code integration
+include = ["mycodo"]
+exclude = [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.*",
+    "mycodo/tests"
+]
+reportMissingImports = false
+reportMissingTypeStubs = false
+pythonVersion = "3.9"
+pythonPlatform = "Linux"
+typeCheckingMode = "basic"
+useLibraryCodeForTypes = true
+
+[tool.black]
+line-length = 120
+target-version = ['py39']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 120

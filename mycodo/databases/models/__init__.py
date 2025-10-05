@@ -20,6 +20,7 @@
 #  Contact at kylegabriel.com
 
 import subprocess
+from typing import Any
 
 import sqlalchemy
 from flask import current_app
@@ -85,7 +86,7 @@ def alembic_upgrade_db():
         upgrade_alembic()
 
 
-def insert_or_ignore(an_object, a_session):
+def insert_or_ignore(an_object: Any, a_session: Any) -> None:
     """
     Duplicates INSERT OR IGNORE in SQLite.   This mostly illustrative and may not be production ready
     """
@@ -107,7 +108,7 @@ def insert_or_ignore(an_object, a_session):
         raise
 
 
-def init_db():
+def init_db() -> None:
     """
     Binds the database to the specific class tables
     and creates them if needed
@@ -115,7 +116,7 @@ def init_db():
     db.create_all()
 
 
-def drop_db():
+def drop_db() -> None:
     """Remove all entries in the database."""
     db.drop_all()
 

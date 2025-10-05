@@ -65,7 +65,7 @@ class ConditionalConditions(CRUDMixin, db.Model):
     # Controller
     controller_id = db.Column(db.String(36), default='')
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "<{cls}(id={s.id})>".format(s=self, cls=self.__class__.__name__)
 
 
@@ -155,5 +155,5 @@ class Actions(CRUDMixin, db.Model):
     code = db.Column(db.Text, default='KEY_A')
     send_times = db.Column(db.Integer, default=1)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "<{cls}(id={s.id})>".format(s=self, cls=self.__class__.__name__)

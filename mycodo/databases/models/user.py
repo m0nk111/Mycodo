@@ -1,5 +1,6 @@
 # coding=utf-8
 import bcrypt
+from typing import Union
 from flask_login import UserMixin
 
 from mycodo.databases import CRUDMixin
@@ -28,18 +29,18 @@ class User(UserMixin, CRUDMixin, db.Model):
     password_reset_code_expiration = db.Column(db.DateTime, default=None)
     password_reset_last_request = db.Column(db.DateTime, default=None)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         output = "<User: <name='{name}', email='{email}' is_admin='{isadmin}'>"
         return output.format(name=self.name, email=self.email, isadmin=bool(self.role_id == 1))
 
-    def set_password(self, new_password):
+    def set_password(self, new_password: Union[str, bytes]) -> None:
         """saves a password hash  """
         if isinstance(new_password, str):
             new_password = new_password.encode('utf-8')
         self.password_hash = bcrypt.hashpw(new_password, bcrypt.gensalt())
 
     @staticmethod
-    def check_password(password, hashed_password):
+    def check_password(password: Union[str, bytes], hashed_password: Union[str, bytes]) -> bytes:
         """validates a password."""
         # Check type of password hashed_password to determine if it is a str
         # and should be encoded

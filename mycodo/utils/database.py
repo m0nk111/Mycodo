@@ -2,6 +2,7 @@
 import logging
 import time
 from sqlite3 import OperationalError
+from typing import Any, Optional
 
 import sqlalchemy
 
@@ -11,7 +12,11 @@ from mycodo.databases.utils import session_scope
 logger = logging.getLogger("mycodo.database")
 
 
-def db_retrieve_table(table, entry=None, unique_id=None):
+def db_retrieve_table(
+    table: Any,
+    entry: Optional[str] = None,
+    unique_id: Optional[str] = None
+) -> Any:
     """
     Return SQL database query object with optional filtering
     Used in Flask (For daemon, see db_retrieve_table_daemon() below)
@@ -35,12 +40,13 @@ def db_retrieve_table(table, entry=None, unique_id=None):
 
 
 def db_retrieve_table_daemon(
-        table,
-        entry=None,
-        device_id=None,
-        unique_id=None,
-        custom_name=None,
-        custom_value=None):
+        table: Any,
+        entry: Optional[str] = None,
+        device_id: Optional[int] = None,
+        unique_id: Optional[str] = None,
+        custom_name: Optional[str] = None,
+        custom_value: Optional[Any] = None
+) -> Any:
     """
     Return SQL database query object with optional filtering
     Used in daemon (For Flask, see db_retrieve_table() above)
