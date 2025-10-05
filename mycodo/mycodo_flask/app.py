@@ -5,6 +5,7 @@
 import base64
 import logging
 import os
+import sys
 
 import flask_login
 from flask import Flask, flash, redirect, request, url_for
@@ -15,20 +16,29 @@ from flask_login import current_user
 from flask_session import Session
 from flask_talisman import Talisman
 
-from mycodo.config import INSTALL_DIRECTORY, LANGUAGES, ProdConfig
+from mycodo.config import INSTALL_DIRECTORY, LANGUAGES, ProdConfig, MYCODO_VERSION
 from mycodo.databases.models import Misc, User, Widget, populate_db
 from mycodo.databases.utils import session_scope
 from mycodo.mycodo_flask import (routes_admin, routes_authentication,
                                  routes_dashboard, routes_function,
                                  routes_general, routes_input, routes_method,
-                                 routes_output, routes_page,
+                                 routes_monitoring, routes_output, routes_page,
                                  routes_password_reset, routes_remote_admin,
                                  routes_settings, routes_static)
 from mycodo.mycodo_flask.api import api_blueprint, init_api
 from mycodo.mycodo_flask.extensions import db
+from mycodo.mycodo_flask.middleware import setup_request_middleware
 from mycodo.mycodo_flask.utils.utils_general import get_ip_address
 from mycodo.utils.layouts import update_layout
+from mycodo.utils.logging_config import setup_structlog
+from mycodo.utils.metrics import metrics_collector
 from mycodo.utils.widgets import parse_widget_information
+
+# Initialize structured logging
+# Use console format for development, JSON for production
+json_logs = os.environ.get('MYCODO_JSON_LOGS', 'false').lower() == 'true'
+log_level = os.environ.get('MYCODO_LOG_LEVEL', 'INFO')
+setup_structlog(json_logs=json_logs, log_level=log_level)
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +74,18 @@ def register_extensions(app):
     app = extension_limiter(app)  # Limit authentication blueprint requests to 200 per minute
     app = extension_login_manager(app)  # User login management
     app = extension_session(app)  # Server side session
+    
+    # Set up request middleware for logging and metrics
+    setup_request_middleware(app)
+    
+    # Set application info in metrics
+    try:
+        metrics_collector.set_application_info(
+            version=MYCODO_VERSION,
+            python_version=sys.version.split()[0]
+        )
+    except Exception as e:
+        logger.error(f"Failed to set metrics application info: {e}")
 
     # Create and populate database if it doesn't exist
     with app.app_context():
@@ -98,6 +120,7 @@ def register_blueprints(app):
     app.register_blueprint(routes_general.blueprint)  # register general routes
     app.register_blueprint(routes_input.blueprint)  # register input routes
     app.register_blueprint(routes_method.blueprint)  # register method views
+    app.register_blueprint(routes_monitoring.blueprint)  # register monitoring routes (health, metrics)
     app.register_blueprint(routes_output.blueprint)  # register output views
     app.register_blueprint(routes_page.blueprint)  # register page views
     app.register_blueprint(routes_remote_admin.blueprint)  # register remote admin views
