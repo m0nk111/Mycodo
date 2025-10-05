@@ -236,3 +236,19 @@ docs-old/_build/
 
 # PyBuilder
 target/
+
+# Modern Python tooling
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.env
+.env.local
+*.pyc
+
+# Frontend (Vue.js)
+node_modules/
+dist/
+.nuxt/
+.output/
+frontend/dist/
+frontend/node_modules/
