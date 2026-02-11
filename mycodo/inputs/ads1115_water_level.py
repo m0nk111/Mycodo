@@ -95,10 +95,10 @@ INPUT_INFORMATION = {
             "type": "select",
             "default_value": "2",
             "options_select": [
-                ("0", "A0 (ADC Channel 0)"),
-                ("1", "A1 (ADC Channel 1)"),
-                ("2", "A2 (ADC Channel 2)"),
-                ("3", "A3 (ADC Channel 3)"),
+                ("0", lazy_gettext("A0 (ADC Channel 0)")),
+                ("1", lazy_gettext("A1 (ADC Channel 1)")),
+                ("2", lazy_gettext("A2 (ADC Channel 2)")),
+                ("3", lazy_gettext("A3 (ADC Channel 3)")),
             ],
             "name": lazy_gettext("Channel"),
             "phrase": lazy_gettext("ADC channel to configure"),
@@ -356,7 +356,19 @@ class InputModule(AbstractInput):
 
     def show_cal(self, args_dict):
         """Show current calibration for selected channel."""
-        ch = int(args_dict.get("cal_channel", "0"))
+        cal_channel_raw = args_dict.get("cal_channel", "0")
+        try:
+            ch = int(cal_channel_raw)
+        except (ValueError, TypeError):
+            self.logger.error("Invalid cal_channel value: %r", cal_channel_raw)
+            return
+
+        if ch < 0 or ch >= len(self.cal):
+            self.logger.error(
+                "Calibration channel must be between 0 and {}".format(len(self.cal) - 1)
+            )
+            return
+
         c = self.cal[ch]
         self.logger.info(
             "A{}: Low={:.4f}V={:.1f}cm, High={:.4f}V={:.1f}cm, Tank={}cm/{}L".format(
@@ -372,7 +384,19 @@ class InputModule(AbstractInput):
 
     def clear_calibration(self, args_dict):
         """Reset selected channel to default calibration."""
-        ch = int(args_dict.get("cal_channel", "0"))
+        cal_channel_raw = args_dict.get("cal_channel", "0")
+        try:
+            ch = int(cal_channel_raw)
+        except (ValueError, TypeError):
+            self.logger.error("Invalid cal_channel value: %r", cal_channel_raw)
+            return
+
+        if ch < 0 or ch >= len(self.cal):
+            self.logger.error(
+                "Calibration channel must be between 0 and {}".format(len(self.cal) - 1)
+            )
+            return
+
         for attr, val in _DEFAULTS.items():
             key = "{}_{}".format(attr, ch)
             self.set_custom_option(key, val)
