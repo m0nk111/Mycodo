@@ -28,6 +28,9 @@ measurements_dict = {
 # Maximum calibration level (cm) - adjust if needed for larger tanks
 MAX_CAL_LEVEL_CM = 500
 
+# Number of ADC channels (A0-A3)
+NUM_CHANNELS = 4
+
 # Default calibration values per channel
 _DEFAULTS = {
     "cal_v1": 0.073,
@@ -173,7 +176,7 @@ class InputModule(AbstractInput):
 
         # Per-channel calibration data
         self.cal = {}
-        for ch in range(4):
+        for ch in range(NUM_CHANNELS):
             self.cal[ch] = dict(_DEFAULTS)
 
         self.slopes = {}
@@ -190,7 +193,7 @@ class InputModule(AbstractInput):
             stored = json.loads(input_dev.custom_options)
         except (json.JSONDecodeError, TypeError):
             stored = {}
-        for ch in range(4):
+        for ch in range(NUM_CHANNELS):
             for attr, default in _DEFAULTS.items():
                 key = "{}_{}".format(attr, ch)
                 self.cal[ch][attr] = stored.get(key, default)
@@ -213,7 +216,7 @@ class InputModule(AbstractInput):
                 ExtendedI2C(self.input_dev.i2c_bus),
                 address=int(str(self.input_dev.i2c_location), 16),
             )
-            for ch in range(4):
+            for ch in range(NUM_CHANNELS):
                 self._recalc_slope(ch)
         except Exception as err:
             self.logger.error("Error initializing ADS1115: {}".format(err))
@@ -363,9 +366,9 @@ class InputModule(AbstractInput):
             self.logger.error("Invalid cal_channel value: %r", cal_channel_raw)
             return
 
-        if ch < 0 or ch >= len(self.cal):
+        if ch < 0 or ch >= NUM_CHANNELS:
             self.logger.error(
-                "Calibration channel must be between 0 and {}".format(len(self.cal) - 1)
+                "Calibration channel must be between 0 and {}".format(NUM_CHANNELS - 1)
             )
             return
 
@@ -391,9 +394,9 @@ class InputModule(AbstractInput):
             self.logger.error("Invalid cal_channel value: %r", cal_channel_raw)
             return
 
-        if ch < 0 or ch >= len(self.cal):
+        if ch < 0 or ch >= NUM_CHANNELS:
             self.logger.error(
-                "Calibration channel must be between 0 and {}".format(len(self.cal) - 1)
+                "Calibration channel must be between 0 and {}".format(NUM_CHANNELS - 1)
             )
             return
 
@@ -411,9 +414,9 @@ class InputModule(AbstractInput):
         self.return_dict = copy.deepcopy(measurements_dict)
 
         # Read each ADC channel once, reuse for volume + level slots
-        for adc_ch in range(4):
+        for adc_ch in range(NUM_CHANNELS):
             vol_slot = adc_ch  # CH0-3 = volume (L)
-            lvl_slot = adc_ch + 4  # CH4-7 = level (cm)
+            lvl_slot = adc_ch + NUM_CHANNELS  # CH4-7 = level (cm)
 
             vol_enabled = self.is_enabled(vol_slot)
             lvl_enabled = self.is_enabled(lvl_slot)
