@@ -49,12 +49,14 @@ INPUT_INFORMATION = {
     "input_library": "Adafruit_CircuitPython_ADS1x15",
     "measurements_name": "Water Level",
     "measurements_dict": measurements_dict,
-    "message": "Reads analog water level/pressure sensors (e.g. QDY30A) via "
-    "ADS1115 ADC. CH0-3 output Volume (L), CH4-7 output Water "
-    "Level (cm). Each pair shares the same ADC input: "
-    "CH0+CH4=A0, CH1+CH5=A1, CH2+CH6=A2, CH3+CH7=A3. "
-    "Enable whichever you need. Calibration and tank setup "
-    'is under "Commands" below.',
+    "message": (
+        "Reads analog water level/pressure sensors (e.g. QDY30A) via "
+        "ADS1115 ADC. CH0-3 output Volume (L), CH4-7 output Water "
+        "Level (cm). Each pair shares the same ADC input: "
+        "CH0+CH4=A0, CH1+CH5=A1, CH2+CH6=A2, CH3+CH7=A3. "
+        "Enable whichever you need. Calibration and tank setup "
+        'is under "Commands" below.'
+    ),
     "options_enabled": [
         "measurements_select",
         "i2c_location",
@@ -279,7 +281,19 @@ class InputModule(AbstractInput):
 
     def calibrate_low(self, args_dict):
         """Set low calibration point for selected channel."""
-        ch = int(args_dict.get("cal_channel", "0"))
+        cal_channel_raw = args_dict.get("cal_channel", "0")
+        try:
+            ch = int(cal_channel_raw)
+        except (ValueError, TypeError):
+            self.logger.error("Invalid cal_channel value: %r", cal_channel_raw)
+            return
+
+        if ch < 0 or ch >= NUM_CHANNELS:
+            self.logger.error(
+                "Calibration channel must be between 0 and {}".format(NUM_CHANNELS - 1)
+            )
+            return
+
         try:
             level = float(args_dict.get("cal_level", "0"))
         except (ValueError, TypeError):
@@ -307,7 +321,19 @@ class InputModule(AbstractInput):
 
     def calibrate_high(self, args_dict):
         """Set high calibration point for selected channel."""
-        ch = int(args_dict.get("cal_channel", "0"))
+        cal_channel_raw = args_dict.get("cal_channel", "0")
+        try:
+            ch = int(cal_channel_raw)
+        except (ValueError, TypeError):
+            self.logger.error("Invalid cal_channel value: %r", cal_channel_raw)
+            return
+
+        if ch < 0 or ch >= NUM_CHANNELS:
+            self.logger.error(
+                "Calibration channel must be between 0 and {}".format(NUM_CHANNELS - 1)
+            )
+            return
+
         try:
             level = float(args_dict.get("cal_level", "0"))
         except (ValueError, TypeError):
@@ -335,7 +361,19 @@ class InputModule(AbstractInput):
 
     def set_tank(self, args_dict):
         """Set tank dimensions for selected channel."""
-        ch = int(args_dict.get("cal_channel", "0"))
+        cal_channel_raw = args_dict.get("cal_channel", "0")
+        try:
+            ch = int(cal_channel_raw)
+        except (ValueError, TypeError):
+            self.logger.error("Invalid cal_channel value: %r", cal_channel_raw)
+            return
+
+        if ch < 0 or ch >= NUM_CHANNELS:
+            self.logger.error(
+                "Calibration channel must be between 0 and {}".format(NUM_CHANNELS - 1)
+            )
+            return
+
         try:
             height = float(args_dict.get("tank_height", "41"))
             volume = float(args_dict.get("tank_volume", "50"))
