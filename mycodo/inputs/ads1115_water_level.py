@@ -8,6 +8,8 @@
 import copy
 import json
 
+from flask_babel import lazy_gettext
+
 from mycodo.inputs.base_input import AbstractInput
 
 # CH0-3: Volume (L) from ADC A0-A3
@@ -94,32 +96,32 @@ INPUT_INFORMATION = {
             'type': 'select',
             'default_value': '2',
             'options_select': [
-                ('0', 'CH0'),
-                ('1', 'CH1'),
-                ('2', 'CH2'),
-                ('3', 'CH3'),
+                ('0', 'A0 (ADC Channel 0)'),
+                ('1', 'A1 (ADC Channel 1)'),
+                ('2', 'A2 (ADC Channel 2)'),
+                ('3', 'A3 (ADC Channel 3)'),
             ],
-            'name': 'Channel',
-            'phrase': 'ADC channel to configure'
+            'name': lazy_gettext('Channel'),
+            'phrase': lazy_gettext('ADC channel to configure')
         },
         {
             'id': 'cal_level',
             'type': 'float',
             'default_value': 0.0,
-            'name': 'Water Level (cm)',
-            'phrase': 'Known water level in cm for calibration'
+            'name': lazy_gettext('Water Level (cm)'),
+            'phrase': lazy_gettext('Known water level in cm for calibration')
         },
         {
             'id': 'calibrate_low',
             'type': 'button',
             'wait_for_return': True,
-            'name': 'Calibrate Low Point'
+            'name': lazy_gettext('Calibrate Low Point')
         },
         {
             'id': 'calibrate_high',
             'type': 'button',
             'wait_for_return': True,
-            'name': 'Calibrate High Point'
+            'name': lazy_gettext('Calibrate High Point')
         },
         {
             'type': 'new_line'
@@ -128,21 +130,21 @@ INPUT_INFORMATION = {
             'id': 'tank_height',
             'type': 'float',
             'default_value': 41.0,
-            'name': 'Tank Height (cm)',
-            'phrase': 'Container height at full capacity'
+            'name': lazy_gettext('Tank Height (cm)'),
+            'phrase': lazy_gettext('Container height at full capacity')
         },
         {
             'id': 'tank_volume',
             'type': 'float',
             'default_value': 50.0,
-            'name': 'Tank Volume (L)',
-            'phrase': 'Container volume at full capacity'
+            'name': lazy_gettext('Tank Volume (L)'),
+            'phrase': lazy_gettext('Container volume at full capacity')
         },
         {
             'id': 'set_tank',
             'type': 'button',
             'wait_for_return': True,
-            'name': 'Set Tank Dimensions'
+            'name': lazy_gettext('Set Tank Dimensions')
         },
         {
             'type': 'new_line'
@@ -151,13 +153,13 @@ INPUT_INFORMATION = {
             'id': 'show_cal',
             'type': 'button',
             'wait_for_return': True,
-            'name': 'Show Current Calibration'
+            'name': lazy_gettext('Show Current Calibration')
         },
         {
             'id': 'clear_calibration',
             'type': 'button',
             'wait_for_return': True,
-            'name': 'Reset Channel to Defaults'
+            'name': lazy_gettext('Reset Channel to Defaults')
         }
     ]
 }
@@ -219,6 +221,8 @@ class InputModule(AbstractInput):
                 self._recalc_slope(ch)
         except Exception as err:
             self.logger.error("Error initializing ADS1115: {}".format(err))
+            # Ensure failed initialization is detectable by later code
+            self.adc = None
 
     def _recalc_slope(self, ch):
         """Recalculate slope/intercept for a channel from its calibration data."""
@@ -240,12 +244,35 @@ class InputModule(AbstractInput):
 
     def get_volt_data(self, channel):
         """Read voltage from the specified ADS1115 channel."""
-        if not self.adc:
+        # Ensure ADC and helper classes are initialized
+        if not getattr(self, "adc", None) or not getattr(self, "analog_in", None) or not getattr(self, "ads", None):
+            if hasattr(self, "logger"):
+                self.logger.error("ADS1115 not initialized; cannot read channel %s", channel)
             return None
+
         adc_channels = [self.ads.P0, self.ads.P1, self.ads.P2, self.ads.P3]
-        chan = self.analog_in(self.adc, adc_channels[channel])
-        self.adc.gain = self.adc_gain
-        return chan.voltage
+
+        # Normalize and validate channel index
+        try:
+            channel_index = int(channel)
+        except (TypeError, ValueError):
+            if hasattr(self, "logger"):
+                self.logger.error("Invalid ADC channel value %r; must be an integer between 0 and 3", channel)
+            return None
+
+        if channel_index < 0 or channel_index >= len(adc_channels):
+            if hasattr(self, "logger"):
+                self.logger.error("ADC channel %s out of range; must be between 0 and 3", channel_index)
+            return None
+
+        try:
+            chan = self.analog_in(self.adc, adc_channels[channel_index])
+            self.adc.gain = self.adc_gain
+            return chan.voltage
+        except Exception as err:
+            if hasattr(self, "logger"):
+                self.logger.error("Error accessing ADC channel %s: %s", channel_index, err)
+            return None
 
     def calibrate_low(self, args_dict):
         """Set low calibration point for selected channel."""
@@ -254,6 +281,11 @@ class InputModule(AbstractInput):
             level = float(args_dict.get('cal_level', '0'))
         except (ValueError, TypeError):
             self.logger.error("Invalid level value")
+            return
+
+        # Validate calibration level is within reasonable range
+        if level < 0 or level > 500:
+            self.logger.error("Calibration level must be between 0 and 500 cm")
             return
 
         voltage = self.get_volt_data(ch)
@@ -278,6 +310,11 @@ class InputModule(AbstractInput):
             self.logger.error("Invalid level value")
             return
 
+        # Validate calibration level is within reasonable range
+        if level < 0 or level > 500:
+            self.logger.error("Calibration level must be between 0 and 500 cm")
+            return
+
         voltage = self.get_volt_data(ch)
         if voltage is None:
             self.logger.error("Cannot read ADC channel {}".format(ch))
@@ -300,6 +337,15 @@ class InputModule(AbstractInput):
         except (ValueError, TypeError):
             self.logger.error("Invalid tank dimensions")
             return
+
+        # Validate tank dimensions are positive
+        if height <= 0:
+            self.logger.error("Tank height must be greater than 0")
+            return
+        if volume <= 0:
+            self.logger.error("Tank volume must be greater than 0")
+            return
+
         self.cal[ch]['height'] = height
         self.cal[ch]['vol'] = volume
         self.set_custom_option('height_{}'.format(ch), height)
@@ -323,7 +369,6 @@ class InputModule(AbstractInput):
         ch = int(args_dict.get('cal_channel', '0'))
         for attr, val in _DEFAULTS.items():
             key = '{}_{}'.format(attr, ch)
-            self.delete_custom_option(key)
             self.set_custom_option(key, val)
             self.cal[ch][attr] = val
         self._recalc_slope(ch)
@@ -363,14 +408,13 @@ class InputModule(AbstractInput):
                 vol = self.cal[adc_ch]['vol']
                 if height and height > 0:
                     volume = level_cm * (vol / height)
+                    self.value_set(vol_slot, volume)
                 else:
                     volume = 0.0
-                self.value_set(vol_slot, volume)
+                    self.value_set(vol_slot, volume)
 
-            self.logger.debug(
-                "A{}: {:.4f}V -> {:.1f}cm -> {:.1f}L".format(
-                    adc_ch, voltage, level_cm,
-                    level_cm * (self.cal[adc_ch]['vol'] / self.cal[adc_ch]['height'])
-                    if self.cal[adc_ch]['height'] > 0 else 0.0))
+                self.logger.debug(
+                    "A{}: {:.4f}V -> {:.1f}cm -> {:.1f}L".format(
+                        adc_ch, voltage, level_cm, volume))
 
         return self.return_dict
