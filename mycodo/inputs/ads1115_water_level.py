@@ -244,10 +244,8 @@ class InputModule(AbstractInput):
 
     def get_volt_data(self, channel):
         """Read voltage from the specified ADS1115 channel."""
-        # Ensure ADC and helper classes are initialized
-        if not getattr(self, "adc", None) or not getattr(self, "analog_in", None) or not getattr(self, "ads", None):
-            if hasattr(self, "logger"):
-                self.logger.error("ADS1115 not initialized; cannot read channel %s", channel)
+        if not self.adc:
+            self.logger.error("ADS1115 not initialized; cannot read channel %s", channel)
             return None
 
         adc_channels = [self.ads.P0, self.ads.P1, self.ads.P2, self.ads.P3]
@@ -256,13 +254,11 @@ class InputModule(AbstractInput):
         try:
             channel_index = int(channel)
         except (TypeError, ValueError):
-            if hasattr(self, "logger"):
-                self.logger.error("Invalid ADC channel value %r; must be an integer between 0 and 3", channel)
+            self.logger.error("Invalid ADC channel value %r; must be an integer between 0 and 3", channel)
             return None
 
         if channel_index < 0 or channel_index >= len(adc_channels):
-            if hasattr(self, "logger"):
-                self.logger.error("ADC channel %s out of range; must be between 0 and 3", channel_index)
+            self.logger.error("ADC channel %s out of range; must be between 0 and 3", channel_index)
             return None
 
         try:
@@ -270,8 +266,7 @@ class InputModule(AbstractInput):
             self.adc.gain = self.adc_gain
             return chan.voltage
         except Exception as err:
-            if hasattr(self, "logger"):
-                self.logger.error("Error accessing ADC channel %s: %s", channel_index, err)
+            self.logger.error("Error accessing ADC channel %s: %s", channel_index, err)
             return None
 
     def calibrate_low(self, args_dict):
