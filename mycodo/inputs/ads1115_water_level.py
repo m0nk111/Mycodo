@@ -254,20 +254,24 @@ class InputModule(AbstractInput):
             return None
 
         adc_channels = [self.ads.P0, self.ads.P1, self.ads.P2, self.ads.P3]
+        max_channel_index = len(adc_channels) - 1
 
         # Normalize and validate channel index
         try:
             channel_index = int(channel)
         except (TypeError, ValueError):
             self.logger.error(
-                "Invalid ADC channel value %r; must be an integer between 0 and 3",
+                "Invalid ADC channel value %r; must be an integer between 0 and %d",
                 channel,
+                max_channel_index,
             )
             return None
 
         if channel_index < 0 or channel_index >= len(adc_channels):
             self.logger.error(
-                "ADC channel %s out of range; must be between 0 and 3", channel_index
+                "ADC channel %s out of range; must be between 0 and %d",
+                channel_index,
+                max_channel_index,
             )
             return None
 

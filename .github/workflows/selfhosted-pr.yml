@@ -42,7 +42,7 @@ jobs:
           set -euo pipefail
           base_sha='${{ github.event.pull_request.base.sha }}'
           head_sha='${{ github.event.pull_request.head.sha }}'
-          mapfile -t files < <(git diff --name-only "$base_sha" "$head_sha" -- '*.py' || true)
+          mapfile -t files < <(git diff --diff-filter=d --name-only "$base_sha" "$head_sha" -- '*.py' || true)
           if [ ${#files[@]} -eq 0 ]; then
             echo "files=" >> "$GITHUB_OUTPUT"
             exit 0
