@@ -25,6 +25,9 @@ measurements_dict = {
     7: {'measurement': 'length', 'unit': 'cm', 'name': 'CH3 Level'},
 }
 
+# Maximum calibration level (cm) - adjust if needed for larger tanks
+MAX_CAL_LEVEL_CM = 500
+
 # Default calibration values per channel
 _DEFAULTS = {
     'cal_v1': 0.073,
@@ -239,7 +242,7 @@ class InputModule(AbstractInput):
             self.intercepts[ch] = l1 - (self.slopes[ch] * v1)
 
         self.logger.debug(
-            "CH{} cal: {:.4f}V={}cm, {:.4f}V={}cm -> slope={:.4f}".format(
+            "A{} cal: {:.4f}V={}cm, {:.4f}V={}cm -> slope={:.4f}".format(
                 ch, v1, l1, v2, l2, self.slopes[ch]))
 
     def get_volt_data(self, channel):
@@ -279,13 +282,13 @@ class InputModule(AbstractInput):
             return
 
         # Validate calibration level is within reasonable range
-        if level < 0 or level > 500:
-            self.logger.error("Calibration level must be between 0 and 500 cm")
+        if level < 0 or level > MAX_CAL_LEVEL_CM:
+            self.logger.error("Calibration level must be between 0 and {} cm".format(MAX_CAL_LEVEL_CM))
             return
 
         voltage = self.get_volt_data(ch)
         if voltage is None:
-            self.logger.error("Cannot read ADC channel {}".format(ch))
+            self.logger.error("Cannot read ADC channel A{}".format(ch))
             return
 
         self.cal[ch]['cal_v1'] = voltage
@@ -294,7 +297,7 @@ class InputModule(AbstractInput):
         self.set_custom_option('cal_l1_{}'.format(ch), level)
         self._recalc_slope(ch)
         self.logger.info(
-            "CH{} Low: {:.4f}V = {:.1f}cm".format(ch, voltage, level))
+            "A{} Low: {:.4f}V = {:.1f}cm".format(ch, voltage, level))
 
     def calibrate_high(self, args_dict):
         """Set high calibration point for selected channel."""
@@ -306,13 +309,13 @@ class InputModule(AbstractInput):
             return
 
         # Validate calibration level is within reasonable range
-        if level < 0 or level > 500:
-            self.logger.error("Calibration level must be between 0 and 500 cm")
+        if level < 0 or level > MAX_CAL_LEVEL_CM:
+            self.logger.error("Calibration level must be between 0 and {} cm".format(MAX_CAL_LEVEL_CM))
             return
 
         voltage = self.get_volt_data(ch)
         if voltage is None:
-            self.logger.error("Cannot read ADC channel {}".format(ch))
+            self.logger.error("Cannot read ADC channel A{}".format(ch))
             return
 
         self.cal[ch]['cal_v2'] = voltage
@@ -321,7 +324,7 @@ class InputModule(AbstractInput):
         self.set_custom_option('cal_l2_{}'.format(ch), level)
         self._recalc_slope(ch)
         self.logger.info(
-            "CH{} High: {:.4f}V = {:.1f}cm".format(ch, voltage, level))
+            "A{} High: {:.4f}V = {:.1f}cm".format(ch, voltage, level))
 
     def set_tank(self, args_dict):
         """Set tank dimensions for selected channel."""
@@ -346,14 +349,14 @@ class InputModule(AbstractInput):
         self.set_custom_option('height_{}'.format(ch), height)
         self.set_custom_option('vol_{}'.format(ch), volume)
         self.logger.info(
-            "CH{} Tank: {}cm = {}L".format(ch, height, volume))
+            "A{} Tank: {}cm = {}L".format(ch, height, volume))
 
     def show_cal(self, args_dict):
         """Show current calibration for selected channel."""
         ch = int(args_dict.get('cal_channel', '0'))
         c = self.cal[ch]
         self.logger.info(
-            "CH{}: Low={:.4f}V={:.1f}cm, High={:.4f}V={:.1f}cm, "
+            "A{}: Low={:.4f}V={:.1f}cm, High={:.4f}V={:.1f}cm, "
             "Tank={}cm/{}L".format(
                 ch, c['cal_v1'], c['cal_l1'],
                 c['cal_v2'], c['cal_l2'],
@@ -367,7 +370,7 @@ class InputModule(AbstractInput):
             self.set_custom_option(key, val)
             self.cal[ch][attr] = val
         self._recalc_slope(ch)
-        self.logger.info("CH{} reset to defaults".format(ch))
+        self.logger.info("A{} reset to defaults".format(ch))
 
     def get_measurement(self):
         if not self.adc:
