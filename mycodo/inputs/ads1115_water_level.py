@@ -7,6 +7,7 @@
 #
 import copy
 import json
+import math
 
 from flask_babel import lazy_gettext
 
@@ -328,6 +329,10 @@ class InputModule(AbstractInput):
             self.logger.error("Invalid level value")
             return
 
+        if not math.isfinite(level):
+            self.logger.error("Level must be a finite number")
+            return
+
         # Validate calibration level is within reasonable range
         if level < 0 or level > MAX_CAL_LEVEL_CM:
             self.logger.error(
@@ -357,6 +362,10 @@ class InputModule(AbstractInput):
             level = float(args_dict.get("cal_level", "0"))
         except (ValueError, TypeError):
             self.logger.error("Invalid level value")
+            return
+
+        if not math.isfinite(level):
+            self.logger.error("Level must be a finite number")
             return
 
         # Validate calibration level is within reasonable range
@@ -389,6 +398,10 @@ class InputModule(AbstractInput):
             volume = float(args_dict.get("tank_volume", "50"))
         except (ValueError, TypeError):
             self.logger.error("Invalid tank dimensions")
+            return
+
+        if not math.isfinite(height) or not math.isfinite(volume):
+            self.logger.error("Tank dimensions must be finite numbers")
             return
 
         # Validate tank dimensions are positive
