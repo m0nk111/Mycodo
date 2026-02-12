@@ -245,6 +245,28 @@ class InputModule(AbstractInput):
             )
         )
 
+    def _get_valid_channel(self, args_dict):
+        """
+        Parse and validate cal_channel from args_dict.
+        
+        Returns the validated channel number (0 to NUM_CHANNELS-1) or None if invalid.
+        Logs appropriate error messages for invalid input.
+        """
+        cal_channel_raw = args_dict.get("cal_channel", "0")
+        try:
+            ch = int(cal_channel_raw)
+        except (ValueError, TypeError):
+            self.logger.error("Invalid cal_channel value: %r", cal_channel_raw)
+            return None
+
+        if ch < 0 or ch >= NUM_CHANNELS:
+            self.logger.error(
+                "Calibration channel must be between 0 and {}".format(NUM_CHANNELS - 1)
+            )
+            return None
+
+        return ch
+
     def get_volt_data(self, channel):
         """Read voltage from the specified ADS1115 channel."""
         if not self.adc:
@@ -253,7 +275,18 @@ class InputModule(AbstractInput):
             )
             return None
 
-        adc_channels = [self.ads.P0, self.ads.P1, self.ads.P2, self.ads.P3]
+        # Derive available ADC channels from NUM_CHANNELS to keep a single
+        # source of truth for channel count and mapping.
+        try:
+            adc_channels = [getattr(self.ads, f"P{i}") for i in range(NUM_CHANNELS)]
+        except AttributeError as err:
+            self.logger.error(
+                "ADS1115 channel configuration mismatch for NUM_CHANNELS=%s: %s",
+                NUM_CHANNELS,
+                err,
+            )
+            return None
+
         max_channel_index = len(adc_channels) - 1
 
         # Normalize and validate channel index
@@ -285,17 +318,8 @@ class InputModule(AbstractInput):
 
     def calibrate_low(self, args_dict):
         """Set low calibration point for selected channel."""
-        cal_channel_raw = args_dict.get("cal_channel", "0")
-        try:
-            ch = int(cal_channel_raw)
-        except (ValueError, TypeError):
-            self.logger.error("Invalid cal_channel value: %r", cal_channel_raw)
-            return
-
-        if ch < 0 or ch >= NUM_CHANNELS:
-            self.logger.error(
-                "Calibration channel must be between 0 and {}".format(NUM_CHANNELS - 1)
-            )
+        ch = self._get_valid_channel(args_dict)
+        if ch is None:
             return
 
         try:
@@ -325,17 +349,8 @@ class InputModule(AbstractInput):
 
     def calibrate_high(self, args_dict):
         """Set high calibration point for selected channel."""
-        cal_channel_raw = args_dict.get("cal_channel", "0")
-        try:
-            ch = int(cal_channel_raw)
-        except (ValueError, TypeError):
-            self.logger.error("Invalid cal_channel value: %r", cal_channel_raw)
-            return
-
-        if ch < 0 or ch >= NUM_CHANNELS:
-            self.logger.error(
-                "Calibration channel must be between 0 and {}".format(NUM_CHANNELS - 1)
-            )
+        ch = self._get_valid_channel(args_dict)
+        if ch is None:
             return
 
         try:
@@ -365,17 +380,8 @@ class InputModule(AbstractInput):
 
     def set_tank(self, args_dict):
         """Set tank dimensions for selected channel."""
-        cal_channel_raw = args_dict.get("cal_channel", "0")
-        try:
-            ch = int(cal_channel_raw)
-        except (ValueError, TypeError):
-            self.logger.error("Invalid cal_channel value: %r", cal_channel_raw)
-            return
-
-        if ch < 0 or ch >= NUM_CHANNELS:
-            self.logger.error(
-                "Calibration channel must be between 0 and {}".format(NUM_CHANNELS - 1)
-            )
+        ch = self._get_valid_channel(args_dict)
+        if ch is None:
             return
 
         try:
@@ -401,17 +407,8 @@ class InputModule(AbstractInput):
 
     def show_cal(self, args_dict):
         """Show current calibration for selected channel."""
-        cal_channel_raw = args_dict.get("cal_channel", "0")
-        try:
-            ch = int(cal_channel_raw)
-        except (ValueError, TypeError):
-            self.logger.error("Invalid cal_channel value: %r", cal_channel_raw)
-            return
-
-        if ch < 0 or ch >= NUM_CHANNELS:
-            self.logger.error(
-                "Calibration channel must be between 0 and {}".format(NUM_CHANNELS - 1)
-            )
+        ch = self._get_valid_channel(args_dict)
+        if ch is None:
             return
 
         c = self.cal[ch]
@@ -429,17 +426,8 @@ class InputModule(AbstractInput):
 
     def clear_calibration(self, args_dict):
         """Reset selected channel to default calibration."""
-        cal_channel_raw = args_dict.get("cal_channel", "0")
-        try:
-            ch = int(cal_channel_raw)
-        except (ValueError, TypeError):
-            self.logger.error("Invalid cal_channel value: %r", cal_channel_raw)
-            return
-
-        if ch < 0 or ch >= NUM_CHANNELS:
-            self.logger.error(
-                "Calibration channel must be between 0 and {}".format(NUM_CHANNELS - 1)
-            )
+        ch = self._get_valid_channel(args_dict)
+        if ch is None:
             return
 
         for attr, val in _DEFAULTS.items():
