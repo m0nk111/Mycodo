@@ -248,7 +248,7 @@ class InputModule(AbstractInput):
     def _get_valid_channel(self, args_dict):
         """
         Parse and validate cal_channel from args_dict.
-        
+
         Returns the validated channel number (0 to NUM_CHANNELS-1) or None if invalid.
         Logs appropriate error messages for invalid input.
         """
