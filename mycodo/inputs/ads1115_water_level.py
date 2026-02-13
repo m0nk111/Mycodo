@@ -482,7 +482,7 @@ class InputModule(AbstractInput):
             if vol_enabled:
                 height = self.cal[adc_ch]["height"]
                 vol = self.cal[adc_ch]["vol"]
-                if height and height > 0:
+                if height > 0:
                     volume = level_cm * (vol / height)
                     self.value_set(vol_slot, volume)
                 else:
