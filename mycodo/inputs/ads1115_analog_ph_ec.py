@@ -52,13 +52,14 @@ INPUT_INFORMATION = {
     'input_name_unique': 'ANALOG_PH_EC',
     'input_manufacturer': 'Texas Instruments',
     'input_name': 'ADS1115: Generic Analog pH/EC',
-    'input_name_short': 'ADS1115 pH/EC',
+    'input_name_short': 'ADS1115 pH/EC v1.1',
     'input_library': 'Adafruit_CircuitPython_ADS1x15',
     'measurements_name': 'Ion Concentration/Electrical Conductivity',
     'measurements_dict': measurements_dict,
     'execute_at_modification': execute_at_modification,
 
-    'message': 'This input relies on an ADS1115 analog-to-digital converter (ADC) to measure pH '
+    'message': 'v1.1 — Oversampling, spike filtering, multisample calibration. '
+               'This input relies on an ADS1115 analog-to-digital converter (ADC) to measure pH '
                'and/or electrical conductivity (EC) from analog sensors. You can enable or disable '
                'either measurement if you want to only connect a pH sensor or an EC sensor by '
                'selecting which measurements you want to under Measurements Enabled. Select which '
