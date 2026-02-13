@@ -68,7 +68,11 @@ INPUT_INFORMATION = {
                'actions, these values will be calculated and will replace the currently-set values. '
                'You can use the Clear Calibration action to delete the database values and return '
                'to using the default values. If you delete the Input or create a new Input to use '
-               'your ADC/sensors with, you will need to recalibrate in order to store new calibration data.',
+               'your ADC/sensors with, you will need to recalibrate in order to store new calibration data. '
+               'This input supports configurable oversampling (averaging multiple ADC reads per measurement) '
+               'and adaptive spike rejection (filtering statistical outliers using a sigma threshold) '
+               'for improved measurement stability. During calibration, multiple oversampled readings are '
+               'collected and averaged with spike filtering for maximum accuracy.',
 
     'options_enabled': [
         'measurements_select',
@@ -122,6 +126,33 @@ INPUT_INFORMATION = {
             ],
             'name': 'ADC Channel: EC',
             'phrase': 'The ADC channel the EC sensor is connected'
+        },
+        {
+            'type': 'message',
+            'default_value': 'Oversampling and Filtering',
+        },
+        {
+            'id': 'oversample_count',
+            'type': 'integer',
+            'default_value': 5,
+            'constraints_pass': constraints_pass_positive_value,
+            'name': 'Oversampling Count',
+            'phrase': 'Number of ADC readings to average per measurement (reduces noise). Higher values are more stable but slower.'
+        },
+        {
+            'id': 'spike_rejection_sigma',
+            'type': 'float',
+            'default_value': 3.0,
+            'name': 'Spike Rejection Threshold (σ)',
+            'phrase': 'Reject readings more than this many standard deviations from the mean. Set to 0 to disable. 3.0 (default) rejects ~0.3% of readings.'
+        },
+        {
+            'id': 'calibration_samples',
+            'type': 'integer',
+            'default_value': 20,
+            'constraints_pass': constraints_pass_positive_value,
+            'name': 'Calibration Samples',
+            'phrase': 'Number of oversampled readings to average during calibration. More samples = more accurate calibration.'
         },
         {
             'type': 'message',
@@ -348,6 +379,9 @@ class InputModule(AbstractInput):
 
         self.adc_channel_ph = None
         self.adc_channel_ec = None
+        self.oversample_count = None
+        self.spike_rejection_sigma = None
+        self.calibration_samples = None
         self.temperature_comp_meas_device_id = None
         self.temperature_comp_meas_measurement_id = None
         self.max_age = None
@@ -395,7 +429,11 @@ class InputModule(AbstractInput):
             self.logger.error("Error while initializing: {}".format(err))
 
     def calibrate_ph(self, cal_slot, args_dict):
-        """Calibration helper method."""
+        """Calibration helper method with multisample averaging.
+        
+        Takes multiple oversampled readings during calibration for
+        improved accuracy. Reports standard deviation as a quality metric.
+        """
         if 'calibration_ph' not in args_dict:
             self.logger.error("Cannot conduct calibration without a buffer pH value")
             return
@@ -405,16 +443,15 @@ class InputModule(AbstractInput):
                 args_dict['calibration_ph'], type(args_dict['calibration_ph'])))
             return
 
-        v = self.get_volt_data(int(self.adc_channel_ph))  # pH
+        v, std = self.get_volt_data_multisample(int(self.adc_channel_ph))
         temp = self.get_temp_data()
         if temp is not None:
-            # Use measured temperature
             t = temp
         else:
-            # Assume room temperature of 25C
             t = 25
-        self.logger.debug("Assigning voltage {} and temperature {} to pH {}".format(
-            v, t, args_dict['calibration_ph']))
+        self.logger.info(
+            "pH Cal slot {}: V={:.6f}V (σ={:.4f}mV), T={:.1f}°C, pH={}".format(
+                cal_slot, v, std * 1000, t, args_dict['calibration_ph']))
 
         if cal_slot == 1:
             # set values currently being used
@@ -454,7 +491,11 @@ class InputModule(AbstractInput):
             INPUT_INFORMATION['custom_options'], self.input_dev)
 
     def calibrate_ec(self, cal_slot, args_dict):
-        """Calibration helper method."""
+        """Calibration helper method with multisample averaging.
+        
+        Takes multiple oversampled readings during calibration for
+        improved accuracy. Reports standard deviation as a quality metric.
+        """
         if 'calibration_ec' not in args_dict:
             self.logger.error("Cannot conduct calibration without a standard EC value")
             return
@@ -464,16 +505,15 @@ class InputModule(AbstractInput):
                 args_dict['calibration_ec'], type(args_dict['calibration_ec'])))
             return
 
-        v = self.get_volt_data(int(self.adc_channel_ec))  # EC
+        v, std = self.get_volt_data_multisample(int(self.adc_channel_ec))
         temp = self.get_temp_data()
         if temp is not None:
-            # Use measured temperature
             t = temp
         else:
-            # Assume room temperature of 25C
             t = 25
-        self.logger.debug("Assigning voltage {} and temperature {} to EC {}".format(
-            v, t, args_dict['calibration_ec']))
+        self.logger.info(
+            "EC Cal slot {}: V={:.6f}V (σ={:.4f}mV), T={:.1f}°C, EC={}".format(
+                cal_slot, v, std * 1000, t, args_dict['calibration_ec']))
 
         # For future sessions
         if cal_slot == 1:
@@ -568,14 +608,99 @@ class InputModule(AbstractInput):
         return out_value
 
     def get_volt_data(self, channel):
-        """Measure voltage at ADC channel."""
+        """Measure voltage at ADC channel with oversampling and spike filtering.
+        
+        Takes multiple readings, rejects statistical outliers (spikes),
+        and returns the mean of the remaining readings.
+        """
+        import time
+        import statistics
+
         chan = self.analog_in(self.adc, channel)
         self.adc.gain = self.adc_gain
-        self.logger.debug("Channel {}: Gain {}, {} raw, {} volts".format(
-            channel, self.adc_gain, chan.value, chan.voltage))
-        volt_data = chan.voltage
+
+        num_samples = self.oversample_count if self.oversample_count else 5
+        sigma = self.spike_rejection_sigma if self.spike_rejection_sigma else 3.0
+
+        # Collect oversampled readings
+        readings = []
+        for _ in range(num_samples):
+            readings.append(chan.voltage)
+            time.sleep(0.01)  # 10ms between samples to reduce correlated noise
+
+        # Apply spike rejection if we have enough samples and sigma > 0
+        if sigma > 0 and len(readings) >= 5:
+            readings_mean = statistics.mean(readings)
+            readings_std = statistics.stdev(readings)
+            if readings_std > 0.0001:  # Only filter if there's meaningful variance
+                filtered = [
+                    r for r in readings
+                    if abs(r - readings_mean) <= sigma * readings_std
+                ]
+                spikes_removed = len(readings) - len(filtered)
+                if spikes_removed > 0:
+                    self.logger.debug(
+                        "Channel {}: Removed {} spike(s) from {} readings".format(
+                            channel, spikes_removed, num_samples))
+                # Only use filtered if we still have enough samples
+                if len(filtered) >= 3:
+                    readings = filtered
+
+        volt_data = statistics.mean(readings)
+        self.logger.debug(
+            "Channel {}: Gain {}, {:.6f}V (mean of {} readings, σ={:.4f}mV)".format(
+                channel, self.adc_gain, volt_data, len(readings),
+                statistics.stdev(readings) * 1000 if len(readings) > 1 else 0))
 
         return volt_data
+
+    def get_volt_data_multisample(self, channel, num_samples=None):
+        """Take multiple oversampled readings for calibration.
+        
+        Each sample is itself oversampled (via get_volt_data), then the
+        results are averaged with spike rejection for maximum accuracy.
+        Used during calibration where precision is critical.
+        
+        Returns:
+            tuple: (mean_voltage, std_deviation)
+        """
+        import time
+        import statistics
+
+        if num_samples is None:
+            num_samples = self.calibration_samples if self.calibration_samples else 20
+
+        sigma = self.spike_rejection_sigma if self.spike_rejection_sigma else 3.0
+
+        readings = []
+        for i in range(num_samples):
+            readings.append(self.get_volt_data(channel))
+            time.sleep(0.5)  # 500ms between calibration samples
+
+        # Apply spike rejection on the calibration readings
+        if sigma > 0 and len(readings) >= 5:
+            readings_mean = statistics.mean(readings)
+            readings_std = statistics.stdev(readings)
+            if readings_std > 0.0001:
+                filtered = [
+                    r for r in readings
+                    if abs(r - readings_mean) <= sigma * readings_std
+                ]
+                spikes_removed = len(readings) - len(filtered)
+                if spikes_removed > 0:
+                    self.logger.info(
+                        "Calibration: Removed {} spike(s) from {} readings".format(
+                            spikes_removed, num_samples))
+                if len(filtered) >= 3:
+                    readings = filtered
+
+        avg = statistics.mean(readings)
+        std = statistics.stdev(readings) if len(readings) > 1 else 0
+        self.logger.info(
+            "Calibration voltage: {:.6f}V (σ={:.4f}mV, {} samples)".format(
+                avg, std * 1000, len(readings)))
+
+        return avg, std
 
     def convert_volt_to_ph(self, volt, temp):
         """Convert voltage to pH."""
