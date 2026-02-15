@@ -728,16 +728,31 @@ class InputModule(AbstractInput):
 
         if self.is_enabled(0):  # pH
             volt = self.get_volt_data(int(self.adc_channel_ph))
-            temp = self.get_temp_data()
-            ph = self.convert_volt_to_ph(volt, temp)
-            self.logger.debug("pH: {:.4f}V => {:.3f}".format(volt, ph))
-            self.value_set(0, ph)
+
+            # Sanity Check for disconnected/loose wire (pH sensor range approx 0-3.0V)
+            # DFRobot pH 2.0 = 0V, pH 7.0 = 1.5V (typ), pH 14.0 = 3.0V.
+            # Isolator might push slightly higher, but >3.7V is almost certainly a fault.
+            if volt > 3.7:
+                 self.logger.error("pH Voltage {:.4f}V > 3.7V! Possible disconnect or hardware fault.".format(volt))
+                 self.value_set(0, None) # Return None to prevent erratic control behavior
+            else:
+                temp = self.get_temp_data()
+                ph = self.convert_volt_to_ph(volt, temp)
+                self.logger.debug("pH: {:.4f}V => {:.3f}".format(volt, ph))
+                self.value_set(0, ph)
 
         if self.is_enabled(1):  # EC
             volt = self.get_volt_data(int(self.adc_channel_ec))
-            temp = self.get_temp_data()
-            ec = self.convert_volt_to_ec(volt, temp)
-            self.logger.debug("EC: {:.4f}V => {:.1f}µS/cm".format(volt, ec))
-            self.value_set(1, ec)
+
+            # Sanity Check: DFRobot EC max output is ~3.4V.
+            # ADS1115 open input or short to 5V will read >4.0V on gain 1.
+            if volt > 3.7:
+                 self.logger.error("EC Voltage {:.4f}V > 3.7V! Possible disconnect or hardware fault.".format(volt))
+                 self.value_set(1, None) # Return None to prevent erratic control behavior
+            else:
+                temp = self.get_temp_data()
+                ec = self.convert_volt_to_ec(volt, temp)
+                self.logger.debug("EC: {:.4f}V => {:.1f}µS/cm".format(volt, ec))
+                self.value_set(1, ec)
 
         return self.return_dict
