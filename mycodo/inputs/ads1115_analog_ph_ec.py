@@ -1,5 +1,7 @@
 # coding=utf-8
 import copy
+import statistics
+import time
 import traceback
 
 from flask_babel import lazy_gettext
@@ -122,6 +124,26 @@ INPUT_INFORMATION = {
             ],
             'name': 'ADC Channel: EC',
             'phrase': 'The ADC channel the EC sensor is connected'
+        },
+        {
+            'type': 'message',
+            'default_value': 'Oversampling',
+        },
+        {
+            'id': 'oversample_count',
+            'type': 'integer',
+            'default_value': 15,
+            'constraints_pass': constraints_pass_positive_value,
+            'name': 'Samples per Measurement',
+            'phrase': 'Number of ADC readings per measurement (median + IQR filtering). Min 7.'
+        },
+        {
+            'id': 'calibration_samples',
+            'type': 'integer',
+            'default_value': 20,
+            'constraints_pass': constraints_pass_positive_value,
+            'name': 'Calibration Samples',
+            'phrase': 'Number of measurements to collect during calibration.'
         },
         {
             'type': 'message',
@@ -348,6 +370,8 @@ class InputModule(AbstractInput):
 
         self.adc_channel_ph = None
         self.adc_channel_ec = None
+        self.oversample_count = None
+        self.calibration_samples = None
         self.temperature_comp_meas_device_id = None
         self.temperature_comp_meas_measurement_id = None
         self.max_age = None
@@ -395,7 +419,7 @@ class InputModule(AbstractInput):
             self.logger.error("Error while initializing: {}".format(err))
 
     def calibrate_ph(self, cal_slot, args_dict):
-        """Calibration helper method."""
+        """Calibrate pH using multisample averaging, then verify."""
         if 'calibration_ph' not in args_dict:
             self.logger.error("Cannot conduct calibration without a buffer pH value")
             return
@@ -405,35 +429,40 @@ class InputModule(AbstractInput):
                 args_dict['calibration_ph'], type(args_dict['calibration_ph'])))
             return
 
-        v = self.get_volt_data(int(self.adc_channel_ph))  # pH
+        v, std = self.get_volt_data_multisample(int(self.adc_channel_ph))
         temp = self.get_temp_data()
-        if temp is not None:
-            # Use measured temperature
-            t = temp
-        else:
-            # Assume room temperature of 25C
-            t = 25
-        self.logger.debug("Assigning voltage {} and temperature {} to pH {}".format(
-            v, t, args_dict['calibration_ph']))
+        t = temp if temp is not None else 25
+        self.logger.info(
+            "pH Cal slot {}: V={:.4f}V (σ={:.2f}mV), T={:.1f}°C, pH={}".format(
+                cal_slot, v, std * 1000, t, args_dict['calibration_ph']))
 
         if cal_slot == 1:
-            # set values currently being used
             self.ph_cal_v1 = v
             self.ph_cal_ph1 = args_dict['calibration_ph']
             self.ph_cal_t1 = t
-            # save values for next startup
             self.set_custom_option("ph_cal_v1", v)
             self.set_custom_option("ph_cal_ph1", args_dict['calibration_ph'])
             self.set_custom_option("ph_cal_t1", t)
         elif cal_slot == 2:
-            # set values currently being used
             self.ph_cal_v2 = v
             self.ph_cal_ph2 = args_dict['calibration_ph']
             self.ph_cal_t2 = t
-            # save values for next startup
             self.set_custom_option("ph_cal_v2", v)
             self.set_custom_option("ph_cal_ph2", args_dict['calibration_ph'])
             self.set_custom_option("ph_cal_t2", t)
+
+        # Verify: read with same method as get_measurement() and check result
+        time.sleep(1)
+        verify_v = self.get_volt_data(int(self.adc_channel_ph))
+        verify_ph = self.convert_volt_to_ph(verify_v, temp)
+        deviation = abs(verify_ph - args_dict['calibration_ph'])
+        self.logger.info(
+            "pH Cal VERIFY: V={:.4f}V => pH={:.3f} (target={}, deviation={:.3f})".format(
+                verify_v, verify_ph, args_dict['calibration_ph'], deviation))
+        if deviation > 0.1:
+            self.logger.warning(
+                "pH Cal: Verification deviation {:.3f} > 0.1. Consider recalibrating.".format(
+                    deviation))
 
     def calibrate_ph_slot_1(self, args_dict):
         """calibrate."""
@@ -454,7 +483,7 @@ class InputModule(AbstractInput):
             INPUT_INFORMATION['custom_options'], self.input_dev)
 
     def calibrate_ec(self, cal_slot, args_dict):
-        """Calibration helper method."""
+        """Calibrate EC using multisample averaging, then verify."""
         if 'calibration_ec' not in args_dict:
             self.logger.error("Cannot conduct calibration without a standard EC value")
             return
@@ -464,24 +493,17 @@ class InputModule(AbstractInput):
                 args_dict['calibration_ec'], type(args_dict['calibration_ec'])))
             return
 
-        v = self.get_volt_data(int(self.adc_channel_ec))  # EC
+        v, std = self.get_volt_data_multisample(int(self.adc_channel_ec))
         temp = self.get_temp_data()
-        if temp is not None:
-            # Use measured temperature
-            t = temp
-        else:
-            # Assume room temperature of 25C
-            t = 25
-        self.logger.debug("Assigning voltage {} and temperature {} to EC {}".format(
-            v, t, args_dict['calibration_ec']))
+        t = temp if temp is not None else 25
+        self.logger.info(
+            "EC Cal slot {}: V={:.4f}V (σ={:.2f}mV), T={:.1f}°C, EC={}".format(
+                cal_slot, v, std * 1000, t, args_dict['calibration_ec']))
 
-        # For future sessions
         if cal_slot == 1:
-            # set values currently being used
             self.ec_cal_v1 = v
             self.ec_cal_ec1 = args_dict['calibration_ec']
             self.ec_cal_t1 = t
-            # save values for next startup
             self.set_custom_option("ec_cal_v1", v)
             self.set_custom_option("ec_cal_ec1", args_dict['calibration_ec'])
             self.set_custom_option("ec_cal_t1", t)
@@ -492,6 +514,22 @@ class InputModule(AbstractInput):
             self.set_custom_option("ec_cal_v2", v)
             self.set_custom_option("ec_cal_ec2", args_dict['calibration_ec'])
             self.set_custom_option("ec_cal_t2", t)
+
+        # Verify: read with same method as get_measurement() and check result
+        time.sleep(1)
+        verify_v = self.get_volt_data(int(self.adc_channel_ec))
+        verify_ec = self.convert_volt_to_ec(verify_v, temp)
+        if args_dict['calibration_ec'] > 0:
+            deviation_pct = abs(verify_ec - args_dict['calibration_ec']) / args_dict['calibration_ec'] * 100
+        else:
+            deviation_pct = 0
+        self.logger.info(
+            "EC Cal VERIFY: V={:.4f}V => EC={:.1f}µS/cm (target={}, deviation={:.1f}%)".format(
+                verify_v, verify_ec, args_dict['calibration_ec'], deviation_pct))
+        if deviation_pct > 5:
+            self.logger.warning(
+                "EC Cal: Verification deviation {:.1f}% > 5%. Consider recalibrating.".format(
+                    deviation_pct))
 
     def calibrate_ec_slot_1(self, args_dict):
         """calibrate."""
@@ -568,14 +606,81 @@ class InputModule(AbstractInput):
         return out_value
 
     def get_volt_data(self, channel):
-        """Measure voltage at ADC channel."""
+        """Measure voltage with oversampling, IQR spike rejection, and median.
+
+        The ADS1115 on Raspberry Pi exhibits occasional extreme voltage spikes
+        (~1.5% of readings). Using median instead of mean makes the result
+        immune to these outliers.
+        """
         chan = self.analog_in(self.adc, channel)
         self.adc.gain = self.adc_gain
-        self.logger.debug("Channel {}: Gain {}, {} raw, {} volts".format(
-            channel, self.adc_gain, chan.value, chan.voltage))
-        volt_data = chan.voltage
+        num_samples = self.oversample_count if self.oversample_count else 15
 
+        readings = []
+        for _ in range(num_samples):
+            readings.append(chan.voltage)
+            time.sleep(0.01)
+
+        # IQR-based spike rejection (robust against extreme outliers)
+        if len(readings) >= 7:
+            sorted_r = sorted(readings)
+            q1 = sorted_r[len(sorted_r) // 4]
+            q3 = sorted_r[3 * len(sorted_r) // 4]
+            iqr = q3 - q1
+            fence = 3.0 * max(iqr, 0.002)  # 2mV minimum IQR floor
+            lower, upper = q1 - fence, q3 + fence
+            filtered = [r for r in readings if lower <= r <= upper]
+            spikes = len(readings) - len(filtered)
+            if spikes > 0:
+                self.logger.debug(
+                    "Ch{}: Removed {} spike(s) from {} readings".format(
+                        channel, spikes, num_samples))
+            if len(filtered) >= 5:
+                readings = filtered
+
+        volt_data = statistics.median(readings)
+        self.logger.debug(
+            "Ch{}: Gain {}, {:.4f}V (median of {})".format(
+                channel, self.adc_gain, volt_data, len(readings)))
         return volt_data
+
+    def get_volt_data_multisample(self, channel, num_samples=None):
+        """Collect multiple get_volt_data() readings for calibration.
+
+        Uses the same measurement method as get_measurement() to avoid
+        systematic offset between calibration and measurement.
+
+        Returns (median_voltage, std_deviation).
+        """
+        if num_samples is None:
+            num_samples = self.calibration_samples if self.calibration_samples else 20
+
+        self.logger.info("Calibration: collecting {} readings...".format(num_samples))
+        readings = []
+        for i in range(num_samples):
+            v = self.get_volt_data(channel)
+            readings.append(v)
+            if (i + 1) % 5 == 0:
+                avg = statistics.mean(readings)
+                std = statistics.stdev(readings) if len(readings) > 1 else 0
+                self.logger.info(
+                    "Calibration: {}/{}, avg={:.4f}V, σ={:.2f}mV".format(
+                        i + 1, num_samples, avg, std * 1000))
+            time.sleep(0.5)
+
+        result = statistics.median(readings)
+        std = statistics.stdev(readings) if len(readings) > 1 else 0
+
+        if std > 0.005:
+            self.logger.warning(
+                "Calibration: High variability σ={:.1f}mV (min={:.4f}V, max={:.4f}V). "
+                "Wait for probe to stabilize.".format(
+                    std * 1000, min(readings), max(readings)))
+
+        self.logger.info(
+            "Calibration result: {:.4f}V (median, σ={:.2f}mV, n={})".format(
+                result, std * 1000, len(readings)))
+        return result, std
 
     def convert_volt_to_ph(self, volt, temp):
         """Convert voltage to pH."""
@@ -621,19 +726,18 @@ class InputModule(AbstractInput):
 
         self.return_dict = copy.deepcopy(measurements_dict)
 
-        # Store measurement for each channel
         if self.is_enabled(0):  # pH
-            self.value_set(
-                0,
-                self.convert_volt_to_ph(
-                    self.get_volt_data(int(self.adc_channel_ph)),
-                    self.get_temp_data()))
+            volt = self.get_volt_data(int(self.adc_channel_ph))
+            temp = self.get_temp_data()
+            ph = self.convert_volt_to_ph(volt, temp)
+            self.logger.debug("pH: {:.4f}V => {:.3f}".format(volt, ph))
+            self.value_set(0, ph)
 
         if self.is_enabled(1):  # EC
-            self.value_set(
-                1,
-                self.convert_volt_to_ec(
-                    self.get_volt_data(int(self.adc_channel_ec)),
-                    self.get_temp_data()))
+            volt = self.get_volt_data(int(self.adc_channel_ec))
+            temp = self.get_temp_data()
+            ec = self.convert_volt_to_ec(volt, temp)
+            self.logger.debug("EC: {:.4f}V => {:.1f}µS/cm".format(volt, ec))
+            self.value_set(1, ec)
 
         return self.return_dict
