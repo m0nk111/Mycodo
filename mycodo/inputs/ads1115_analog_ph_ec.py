@@ -2,7 +2,6 @@
 import copy
 import statistics
 import time
-import numpy as np
 import traceback
 
 from flask_babel import lazy_gettext
@@ -593,6 +592,23 @@ class InputModule(AbstractInput):
             INPUT_INFORMATION['custom_options'], self.input_dev)
 
     @staticmethod
+    def _piecewise_interp(x, xp, fp):
+        """Piecewise linear interpolation (equivalent to numpy.interp).
+
+        Clamps to fp[0] below xp[0] and fp[-1] above xp[-1].
+        xp must be sorted in ascending order.
+        """
+        if x <= xp[0]:
+            return fp[0]
+        if x >= xp[-1]:
+            return fp[-1]
+        for i in range(len(xp) - 1):
+            if xp[i] <= x <= xp[i + 1]:
+                t = (x - xp[i]) / (xp[i + 1] - xp[i])
+                return fp[i] + t * (fp[i + 1] - fp[i])
+        return fp[-1]
+
+    @staticmethod
     def nernst_correction(volt, temp):
         """Apply temperature correction for pH. This provides the voltage as if it were measured at 25C.
         Based on the Nernst equation: E = E0 - ln(10) * RT/nF * pH; this gives E = E0 - 0.198 * T * pH.
@@ -772,7 +788,8 @@ class InputModule(AbstractInput):
             ])
             xp = [p[0] for p in points]
             fp = [p[1] for p in points]
-            ec = float(np.interp(v_meas, xp, fp))
+            # Pure-Python piecewise linear interpolation (no numpy needed)
+            ec = self._piecewise_interp(v_meas, xp, fp)
             self.logger.debug(
                 "EC piecewise: V_corr={:.4f}V, xp={}, fp={} => {:.1f}µS/cm".format(
                     v_meas, [round(x, 4) for x in xp], fp, ec))
