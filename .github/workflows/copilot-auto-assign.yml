@@ -1,0 +1,187 @@
+name: Auto-assign Copilot to Priority Issues
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+  pull_request:
+    types: [closed]
+
+permissions:
+  issues: write
+  pull-requests: read
+  contents: read
+
+jobs:
+  assign-copilot:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Check for active Copilot PRs
+        id: check-prs
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.GH_PAT }}
+          script: |
+            const { data: prs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100
+            });
+
+            const copilotPRs = prs.filter(pr =>
+              pr.user.login === 'copilot[bot]' ||
+              pr.user.login === 'Copilot' ||
+              pr.user.login === 'app/copilot-swe-agent' ||
+              pr.user.login.toLowerCase().includes('copilot')
+            );
+
+            console.log(`Found ${copilotPRs.length} active Copilot PRs`);
+
+            if (copilotPRs.length > 0) {
+              console.log('Copilot is busy, skipping assignment');
+              core.setOutput('busy', 'true');
+              return;
+            }
+
+            core.setOutput('busy', 'false');
+
+      - name: Find highest priority unassigned issue
+        id: find-issue
+        if: steps.check-prs.outputs.busy == 'false'
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.GH_PAT }}
+          script: |
+            const labelPriority = {
+              'priority: critical': 0,
+              'priority:critical': 0,
+              'copilot-ready': 0.5,
+              'priority: high': 1,
+              'priority:high': 1,
+              'priority: medium': 2,
+              'priority:medium': 2,
+              'priority: low': 3,
+              'priority:low': 3
+            };
+
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100
+            });
+
+            const candidates = issues.filter(issue => {
+              if (issue.pull_request) return false;
+              if (issue.title.includes('EPIC')) return false;
+              const assignees = issue.assignees.map(a => a.login.toLowerCase());
+              if (assignees.some(a => a.includes('copilot'))) return false;
+              const labels = issue.labels.map(l => l.name.toLowerCase());
+              const hasCopilotLabel = labels.includes('copilot');
+              const hasPriorityLabel = labels.some(l => l.startsWith('priority:') || l.startsWith('priority: '));
+              if (!hasCopilotLabel && !(hasPriorityLabel && issue.assignees.length === 0)) {
+                return false;
+              }
+              const titleLower = issue.title.toLowerCase();
+              if (titleLower.includes('[blocked]') || titleLower.includes('[wip]')) return false;
+              return true;
+            });
+
+            if (candidates.length === 0) {
+              console.log('No eligible issues found for Copilot assignment');
+              core.setOutput('found', 'false');
+              return;
+            }
+
+            const scoredIssues = candidates.map(issue => {
+              let score = 1000;
+              for (const label of issue.labels) {
+                const labelName = label.name.toLowerCase();
+                if (labelPriority[labelName] !== undefined) {
+                  score = labelPriority[labelName] * 100;
+                  break;
+                }
+              }
+              score += issue.number / 100000;
+              return { issue, score };
+            });
+
+            scoredIssues.sort((a, b) => a.score - b.score);
+            const topIssue = scoredIssues[0].issue;
+            console.log(`Selected issue #${topIssue.number}: ${topIssue.title}`);
+
+            core.setOutput('found', 'true');
+            core.setOutput('issue_number', topIssue.number);
+            core.setOutput('issue_title', topIssue.title);
+
+      - name: Assign Copilot to issue (GraphQL)
+        if: steps.check-prs.outputs.busy == 'false' && steps.find-issue.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          ISSUE_NUMBER=${{ steps.find-issue.outputs.issue_number }}
+          echo "Assigning Copilot to issue #${ISSUE_NUMBER}"
+
+          COPILOT_BOT_ID=$(gh api graphql -f query='
+            query($owner: String!, $name: String!) {
+              repository(owner: $owner, name: $name) {
+                suggestedActors(first: 100, capabilities: CAN_BE_ASSIGNED) {
+                  nodes {
+                    ... on Bot {
+                      id
+                      login
+                    }
+                  }
+                }
+              }
+            }
+          ' -f owner="${{ github.repository_owner }}" -f name="${{ github.event.repository.name }}" \
+            --jq '.data.repository.suggestedActors.nodes[] | select(.login == "copilot-swe-agent") | .id')
+
+          if [ -z "$COPILOT_BOT_ID" ]; then
+            echo "::error::Copilot bot not found. Make sure Copilot is enabled and GH_PAT has correct scopes."
+            exit 1
+          fi
+
+          echo "Found Copilot bot with ID: $COPILOT_BOT_ID"
+
+          ISSUE_ID=$(gh api graphql -f query='
+            query($owner: String!, $name: String!, $number: Int!) {
+              repository(owner: $owner, name: $name) {
+                issue(number: $number) {
+                  id
+                }
+              }
+            }
+          ' -f owner="${{ github.repository_owner }}" -f name="${{ github.event.repository.name }}" -F number="$ISSUE_NUMBER" \
+            --jq '.data.repository.issue.id')
+
+          MUTATION_JSON=$(printf '{"query":"mutation { replaceActorsForAssignable(input: {assignableId: \\"%s\\", actorIds: [\\"%s\\"]}) { assignable { ... on Issue { assignees(first: 10) { nodes { login } } } } } }"}' "$ISSUE_ID" "$COPILOT_BOT_ID")
+          RESULT=$(echo "$MUTATION_JSON" | gh api graphql --input - --jq '.data.replaceActorsForAssignable.assignable.assignees.nodes[].login')
+
+          echo "Successfully assigned! New assignees: $RESULT"
+
+      - name: Mention Copilot on issue
+        if: steps.check-prs.outputs.busy == 'false' && steps.find-issue.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          ISSUE_NUMBER=${{ steps.find-issue.outputs.issue_number }}
+          gh issue comment "$ISSUE_NUMBER" --repo "${{ github.repository }}" --body "@copilot Please implement this issue. Create a fresh branch from current master and open a PR when ready. _Auto-triggered by CI (no active Copilot PRs detected)_"
+          echo "Mentioned Copilot on issue #${ISSUE_NUMBER}"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Copilot Auto-Assignment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.check-prs.outputs.busy }}" == "true" ]; then
+            echo "⏳ Copilot is currently busy with an open PR" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ steps.find-issue.outputs.found }}" == "true" ]; then
+            echo "✅ Assigned Copilot to issue #${{ steps.find-issue.outputs.issue_number }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**${{ steps.find-issue.outputs.issue_title }}**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "📭 No unassigned issues found" >> $GITHUB_STEP_SUMMARY
+          fi

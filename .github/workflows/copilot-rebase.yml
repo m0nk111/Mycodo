@@ -1,0 +1,119 @@
+name: Copilot Rebase Helper
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to rebase (optional, rebases all Copilot PRs if empty)'
+        required: false
+        type: number
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  rebase-copilot-prs:
+    runs-on: [self-hosted, Linux]
+
+    steps:
+      - name: Find Copilot PRs
+        id: find-prs
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.GH_PAT }}
+          script: |
+            const inputPR = '${{ github.event.inputs.pr_number }}';
+
+            if (inputPR) {
+              core.setOutput('prs', JSON.stringify([parseInt(inputPR)]));
+              return;
+            }
+
+            const { data: prs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100
+            });
+
+            const copilotPRs = prs.filter(pr =>
+              pr.head.ref.startsWith('copilot/') ||
+              pr.user.login === 'copilot[bot]' ||
+              pr.user.login === 'Copilot'
+            );
+
+            const prNumbers = copilotPRs.map(pr => pr.number);
+            console.log(`Found ${prNumbers.length} Copilot PRs: ${prNumbers.join(', ')}`);
+            core.setOutput('prs', JSON.stringify(prNumbers));
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Rebase PRs
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.GH_PAT }}
+          script: |
+            const prNumbers = JSON.parse('${{ steps.find-prs.outputs.prs }}');
+
+            for (const prNumber of prNumbers) {
+              try {
+                const { data: pr } = await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: prNumber
+                });
+
+                const branch = pr.head.ref;
+                console.log(`Rebasing PR #${prNumber} (${branch}) on master...`);
+
+                const { data: comparison } = await github.rest.repos.compareCommits({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  base: branch,
+                  head: 'master'
+                });
+
+                if (comparison.behind_by === 0) {
+                  console.log(`PR #${prNumber} is already up-to-date`);
+                  continue;
+                }
+
+                console.log(`PR #${prNumber} is ${comparison.behind_by} commits behind master`);
+
+                try {
+                  await github.rest.pulls.updateBranch({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    pull_number: prNumber
+                  });
+                  console.log(`Successfully updated PR #${prNumber}`);
+                } catch (mergeError) {
+                  console.log(`Could not auto-update PR #${prNumber}: ${mergeError.message}`);
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: prNumber,
+                    body: `⚠️ This PR is behind master and couldn't be automatically updated. Please rebase manually:\n\n\`\`\`bash\ngit fetch origin\ngit rebase origin/master\ngit push --force-with-lease\n\`\`\`\n\n_Auto-comment by rebase helper workflow_`
+                  });
+                }
+              } catch (error) {
+                console.error(`Error processing PR #${prNumber}:`, error.message);
+              }
+            }
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Copilot Rebase Helper Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Processed PRs: ${{ steps.find-prs.outputs.prs }}" >> $GITHUB_STEP_SUMMARY
