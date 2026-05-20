@@ -33,6 +33,13 @@ sudo service mycodoflask restart
  - Fix OpenWeather One Call API endpoint to use v3.0 ([#1429](https://github.com/kizniche/Mycodo/pull/1429))
  - Fix apt update not being run before installing apt packages dependencies
  - Fix camera library for different OS releases ([#1487](https://github.com/kizniche/Mycodo/pull/1487))
+ - Improve Telegram grow bot vision error reporting when Guardian rejects image input and fix a false error response after successful `/foto` analysis
+ - Correct Telegram grow bot week/phase tracking to start from the current plant's NFT gutter placement date
+ - Update Telegram grow bot grow-history lore to reflect the current v4 plant and prior v2/v3 failures
+ - Scope Telegram grow bot memory to the current grow run so stale April chat history does not leak into the current plant age/stage answers
+ - Inject the active regulator's live EC thresholds into the Telegram grow bot prompt so EC advice matches the real Mycodo controller configuration
+ - Compute the Telegram grow bot's regulator context from the effective age-coupled EC band so week-1 advice no longer uses mature-stage thresholds
+ - Soften the hydroponics regulator's week-2 and week-3 age-coupled EC ramp to 45% and 60% of the mature target for a more conservative early NFT transition
 
 ### Features
 
@@ -43,6 +50,7 @@ sudo service mycodoflask restart
  - Add Input: VEML7700 Ambient Light Sensor ([#1491](https://github.com/kizniche/Mycodo/pull/1491))
  - Add Input: LTR390 UV Light Sensor ([#1432](https://github.com/kizniche/Mycodo/pull/1432))
  - Add "message_extra" to input options
+ - Add Telegram grow bot check logging that appends `/status`, `/advies`, `/foto`, `/wortel`, `/trend`, and photo-upload summaries to the shared grow log
 
 ### Miscellaneous
 
