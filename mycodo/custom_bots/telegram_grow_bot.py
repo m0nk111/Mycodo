@@ -155,10 +155,73 @@ SENSOR_CONFIG = {
 # Track grow day/week from the date the current plant entered the NFT gutter.
 GROW_START_DATE = "2026-05-16"
 CURRENT_RUN_CONTEXT_TS = f"{GROW_START_DATE}T00:00:00"
-DEFAULT_EC_WEEKLY_BANDS = (
-    "1:500-700, 2:700-800, 3:1000-1200, 4:1300-1500, 5:1600-1700, "
-    "6:1700-1800, 7:1800-1900, 8:1900-2000, 9:2000-2200, "
-    "10:2200-2300, 11:2300-2400, 12:1800-2000, 13:0-800"
+EC_STAGE_BAND_TEMPLATES = {
+    'seedling': ((500.0, 700.0), (700.0, 800.0), (1000.0, 1200.0)),
+    'veg': ((1300.0, 1500.0), (1600.0, 1700.0), (1700.0, 1800.0), (1800.0, 1900.0)),
+    'bloom': ((1900.0, 2000.0), (2000.0, 2200.0), (2200.0, 2300.0), (2300.0, 2400.0)),
+    'ripen': ((1800.0, 2000.0),),
+    'flush': ((0.0, 800.0),),
+}
+
+DEFAULT_EC_STAGE_WEEKS = {
+    'seedling': 3,
+    'veg': 4,
+    'bloom': 4,
+    'ripen': 1,
+    'flush': 1,
+}
+
+
+def _positive_int(value, default: int) -> int:
+    """Return a positive integer or the provided default."""
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _expand_ec_stage_bands(template: tuple[tuple[float, float], ...], weeks: int) -> list[tuple[float, float]]:
+    """Stretch or compress a stage template to the requested number of weeks."""
+    if weeks <= 0:
+        return []
+    if len(template) == 1:
+        return [template[0]] * weeks
+
+    expanded = []
+    for index in range(weeks):
+        progress = 0.0 if weeks == 1 else index / (weeks - 1)
+        scaled = progress * (len(template) - 1)
+        lower_index = int(scaled)
+        upper_index = min(len(template) - 1, lower_index + 1)
+        mix = scaled - lower_index
+        low = template[lower_index][0] + mix * (template[upper_index][0] - template[lower_index][0])
+        high = template[lower_index][1] + mix * (template[upper_index][1] - template[lower_index][1])
+        expanded.append((round(low / 10.0) * 10.0, round(high / 10.0) * 10.0))
+    return expanded
+
+
+def _build_ec_stage_profile_bands(stage_weeks: dict[str, int]) -> dict[int, tuple[float, float]]:
+    """Build a full weekly EC map from stage durations."""
+    week = 1
+    bands: dict[int, tuple[float, float]] = {}
+    for stage_name in ('seedling', 'veg', 'bloom', 'ripen', 'flush'):
+        weeks = _positive_int(stage_weeks.get(stage_name), DEFAULT_EC_STAGE_WEEKS[stage_name])
+        for band in _expand_ec_stage_bands(EC_STAGE_BAND_TEMPLATES[stage_name], weeks):
+            bands[week] = band
+            week += 1
+    return bands
+
+
+def _format_ec_weekly_bands(bands: dict[int, tuple[float, float]]) -> str:
+    """Serialize EC band mapping to Mycodo's week:low-high text format."""
+    chunks = []
+    for week, (low, high) in sorted(bands.items()):
+        chunks.append(f"{week}:{int(low)}-{int(high)}")
+    return ', '.join(chunks)
+
+
+DEFAULT_EC_WEEKLY_BANDS = _format_ec_weekly_bands(
+    _build_ec_stage_profile_bands(DEFAULT_EC_STAGE_WEEKS)
 )
 
 POLL_INTERVAL = 2  # seconds between Telegram getUpdates calls
@@ -509,6 +572,37 @@ def read_regulator_config() -> dict | None:
                 bands[week] = (low, high)
             return bands
 
+        def _stage_profile_week_counts() -> dict[str, int]:
+            return {
+                'seedling': _positive_int(options.get('ec_seedling_weeks'), DEFAULT_EC_STAGE_WEEKS['seedling']),
+                'veg': _positive_int(options.get('ec_veg_weeks'), DEFAULT_EC_STAGE_WEEKS['veg']),
+                'bloom': _positive_int(options.get('ec_bloom_weeks'), DEFAULT_EC_STAGE_WEEKS['bloom']),
+                'ripen': _positive_int(options.get('ec_ripen_weeks'), DEFAULT_EC_STAGE_WEEKS['ripen']),
+                'flush': _positive_int(options.get('ec_flush_weeks'), DEFAULT_EC_STAGE_WEEKS['flush']),
+            }
+
+        def _resolved_band_map() -> tuple[dict[int, tuple[float, float]], str]:
+            schedule_mode = (options.get('ec_schedule_mode') or 'auto').strip().lower()
+            explicit_bands = _parse_ec_weekly_bands(options.get('ec_weekly_bands'))
+            default_bands = _build_ec_stage_profile_bands(DEFAULT_EC_STAGE_WEEKS)
+            stage_profile_bands = _build_ec_stage_profile_bands(_stage_profile_week_counts())
+
+            if schedule_mode == 'legacy_percent':
+                return {}, 'legacy_percent'
+            if schedule_mode == 'explicit_weekly_bands':
+                if explicit_bands:
+                    return explicit_bands, 'weekly_bands'
+                return stage_profile_bands, 'stage_profile'
+            if schedule_mode == 'stage_profile':
+                return stage_profile_bands, 'stage_profile'
+            if explicit_bands and explicit_bands != default_bands:
+                return explicit_bands, 'weekly_bands'
+            if stage_profile_bands:
+                return stage_profile_bands, 'stage_profile'
+            if explicit_bands:
+                return explicit_bands, 'weekly_bands'
+            return {}, 'legacy_percent'
+
         def _band_for_week(bands: dict[int, tuple[float, float]], week: int) -> tuple[float, float] | None:
             if not bands:
                 return None
@@ -539,9 +633,6 @@ def read_regulator_config() -> dict | None:
             4: _num(options.get('ec_week4_pct')) or 80.0,
         }.get(grow_week, 100.0)
         ec_profile_mode = 'legacy_percent'
-        ec_weekly_bands = _parse_ec_weekly_bands(
-            options.get('ec_weekly_bands') or DEFAULT_EC_WEEKLY_BANDS
-        )
         if not ec_age_coupling_enabled:
             ec_age_pct = 100.0
 
@@ -549,6 +640,7 @@ def read_regulator_config() -> dict | None:
         effective_hysteresis_ec = hysteresis_ec
         range_ec_low = None
         range_ec_high = None
+        ec_weekly_bands, ec_profile_mode = _resolved_band_map()
         weekly_band = _band_for_week(ec_weekly_bands, grow_week) if ec_age_coupling_enabled else None
         if weekly_band is not None:
             range_ec_low, range_ec_high = weekly_band
@@ -560,7 +652,6 @@ def read_regulator_config() -> dict | None:
                 ec_age_pct = (effective_setpoint_ec / setpoint_ec) * 100.0
             else:
                 ec_age_pct = 0.0
-            ec_profile_mode = 'weekly_bands'
         elif setpoint_ec is not None and hysteresis_ec is not None:
             factor = max(0.0, ec_age_pct) / 100.0
             effective_setpoint_ec = max(0.0, setpoint_ec * factor)
@@ -1234,7 +1325,9 @@ class ConversationManager:
             parts.append("### Actieve Regulatorconfig (live uit Mycodo DB)")
             if regulator.get('range_ec_low') is not None and regulator.get('range_ec_high') is not None:
                 profile_desc = (
-                    'live weekschema'
+                    'live faseprofiel'
+                    if regulator.get('ec_profile_mode') == 'stage_profile'
+                    else 'live weekschema'
                     if regulator.get('ec_profile_mode') == 'weekly_bands'
                     else f"{regulator['ec_age_pct']:.0f}% van volwassen target"
                 )
