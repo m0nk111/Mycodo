@@ -155,6 +155,11 @@ SENSOR_CONFIG = {
 # Track grow day/week from the date the current plant entered the NFT gutter.
 GROW_START_DATE = "2026-05-16"
 CURRENT_RUN_CONTEXT_TS = f"{GROW_START_DATE}T00:00:00"
+DEFAULT_EC_WEEKLY_BANDS = (
+    "1:500-700, 2:700-800, 3:1000-1200, 4:1300-1500, 5:1600-1700, "
+    "6:1700-1800, 7:1800-1900, 8:1900-2000, 9:2000-2200, "
+    "10:2200-2300, 11:2300-2400, 12:1800-2000, 13:0-800"
+)
 
 POLL_INTERVAL = 2  # seconds between Telegram getUpdates calls
 MAX_HISTORY = 20   # max conversation messages to keep in context
@@ -486,6 +491,34 @@ def read_regulator_config() -> dict | None:
                 return value.strip().lower() in ('1', 'true', 'yes', 'on')
             return bool(value)
 
+        def _parse_ec_weekly_bands(raw_value: str | None) -> dict[int, tuple[float, float]]:
+            raw_text = (raw_value or '').strip()
+            if not raw_text:
+                return {}
+
+            bands: dict[int, tuple[float, float]] = {}
+            for chunk in raw_text.split(','):
+                match = re.match(r'^\s*(\d+)\s*:\s*([0-9.]+)\s*-\s*([0-9.]+)\s*$', chunk)
+                if not match:
+                    continue
+                week = int(match.group(1))
+                low = float(match.group(2))
+                high = float(match.group(3))
+                if week < 1 or low < 0 or high < low:
+                    continue
+                bands[week] = (low, high)
+            return bands
+
+        def _band_for_week(bands: dict[int, tuple[float, float]], week: int) -> tuple[float, float] | None:
+            if not bands:
+                return None
+            if week in bands:
+                return bands[week]
+            previous_weeks = [value for value in bands if value <= week]
+            if previous_weeks:
+                return bands[max(previous_weeks)]
+            return bands[min(bands)]
+
         setpoint_ec = _num(options.get('setpoint_ec'))
         hysteresis_ec = _num(options.get('hysteresis_ec'))
         ec_high_threshold = _num(options.get('ec_high_threshold'))
@@ -505,6 +538,10 @@ def read_regulator_config() -> dict | None:
             3: _num(options.get('ec_week3_pct')) or 65.0,
             4: _num(options.get('ec_week4_pct')) or 80.0,
         }.get(grow_week, 100.0)
+        ec_profile_mode = 'legacy_percent'
+        ec_weekly_bands = _parse_ec_weekly_bands(
+            options.get('ec_weekly_bands') or DEFAULT_EC_WEEKLY_BANDS
+        )
         if not ec_age_coupling_enabled:
             ec_age_pct = 100.0
 
@@ -512,7 +549,19 @@ def read_regulator_config() -> dict | None:
         effective_hysteresis_ec = hysteresis_ec
         range_ec_low = None
         range_ec_high = None
-        if setpoint_ec is not None and hysteresis_ec is not None:
+        weekly_band = _band_for_week(ec_weekly_bands, grow_week) if ec_age_coupling_enabled else None
+        if weekly_band is not None:
+            range_ec_low, range_ec_high = weekly_band
+            effective_setpoint_ec = (range_ec_low + range_ec_high) / 2.0
+            effective_hysteresis_ec = max(25.0, (range_ec_high - range_ec_low) / 2.0)
+            effective_max_ec_before_dose = range_ec_high
+            effective_ec_high_threshold = range_ec_high + effective_hysteresis_ec
+            if setpoint_ec:
+                ec_age_pct = (effective_setpoint_ec / setpoint_ec) * 100.0
+            else:
+                ec_age_pct = 0.0
+            ec_profile_mode = 'weekly_bands'
+        elif setpoint_ec is not None and hysteresis_ec is not None:
             factor = max(0.0, ec_age_pct) / 100.0
             effective_setpoint_ec = max(0.0, setpoint_ec * factor)
             if factor >= 1.0:
@@ -521,17 +570,19 @@ def read_regulator_config() -> dict | None:
                 effective_hysteresis_ec = max(25.0, hysteresis_ec * factor)
             range_ec_low = max(0.0, effective_setpoint_ec - effective_hysteresis_ec)
             range_ec_high = effective_setpoint_ec + effective_hysteresis_ec
+            effective_max_ec_before_dose = max_ec_before_dose
+            if max_ec_before_dose is not None and range_ec_high is not None:
+                effective_max_ec_before_dose = min(max_ec_before_dose, range_ec_high)
 
-        effective_max_ec_before_dose = max_ec_before_dose
-        if max_ec_before_dose is not None and range_ec_high is not None:
-            effective_max_ec_before_dose = min(max_ec_before_dose, range_ec_high)
-
-        effective_ec_high_threshold = ec_high_threshold
-        if ec_high_threshold is not None and range_ec_high is not None and effective_hysteresis_ec is not None:
-            effective_ec_high_threshold = min(
-                ec_high_threshold,
-                range_ec_high + effective_hysteresis_ec,
-            )
+            effective_ec_high_threshold = ec_high_threshold
+            if ec_high_threshold is not None and range_ec_high is not None and effective_hysteresis_ec is not None:
+                effective_ec_high_threshold = min(
+                    ec_high_threshold,
+                    range_ec_high + effective_hysteresis_ec,
+                )
+        else:
+            effective_max_ec_before_dose = max_ec_before_dose
+            effective_ec_high_threshold = ec_high_threshold
 
         return {
             'name': row[0],
@@ -548,6 +599,7 @@ def read_regulator_config() -> dict | None:
             'grow_week': grow_week,
             'ec_age_coupling_enabled': ec_age_coupling_enabled,
             'ec_age_pct': ec_age_pct,
+            'ec_profile_mode': ec_profile_mode,
         }
     except Exception as e:
         log.warning("Regulator config read error: %s", e)
@@ -1181,10 +1233,15 @@ class ConversationManager:
             parts.append("")
             parts.append("### Actieve Regulatorconfig (live uit Mycodo DB)")
             if regulator.get('range_ec_low') is not None and regulator.get('range_ec_high') is not None:
+                profile_desc = (
+                    'live weekschema'
+                    if regulator.get('ec_profile_mode') == 'weekly_bands'
+                    else f"{regulator['ec_age_pct']:.0f}% van volwassen target"
+                )
                 parts.append(
                     "EC band: "
                     f"{regulator['range_ec_low']:.0f}–{regulator['range_ec_high']:.0f} µS/cm "
-                    f"(week {regulator['grow_week']}, {regulator['ec_age_pct']:.0f}% van volwassen target)"
+                    f"(week {regulator['grow_week']}, {profile_desc})"
                 )
             if regulator.get('max_ec_before_dose') is not None:
                 parts.append(

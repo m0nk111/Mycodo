@@ -40,6 +40,7 @@ sudo service mycodoflask restart
  - Inject the active regulator's live EC thresholds into the Telegram grow bot prompt so EC advice matches the real Mycodo controller configuration
  - Compute the Telegram grow bot's regulator context from the effective age-coupled EC band so week-1 advice no longer uses mature-stage thresholds
  - Soften the hydroponics regulator's week-2 and week-3 age-coupled EC ramp to 45% and 60% of the mature target for a more conservative early NFT transition
+ - Teach the Telegram grow bot to read the regulator's full-cycle weekly EC schedule so live advice follows the explicit week bands instead of only the legacy 4-week percentage ramp
 
 ### Features
 
