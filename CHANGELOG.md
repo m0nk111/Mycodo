@@ -42,6 +42,7 @@ sudo service mycodoflask restart
  - Soften the hydroponics regulator's week-2 and week-3 age-coupled EC ramp to 45% and 60% of the mature target for a more conservative early NFT transition
  - Teach the Telegram grow bot to read the regulator's full-cycle weekly EC schedule so live advice follows the explicit week bands instead of only the legacy 4-week percentage ramp
  - Let the hydroponics regulator stretch or compress the full-cycle EC schedule by seedling, veg, bloom, ripen, and flush week counts, while the Telegram grow bot mirrors the same auto/stage/explicit schedule resolution
+ - Allow the ADS1115 analog pH/EC input to store a measured RO-water EC anchor for slot 0 and extrapolate the first EC segment below the lowest calibration voltage instead of forcing a hard zero clamp
 
 ### Features
 
@@ -53,6 +54,7 @@ sudo service mycodoflask restart
  - Add Input: LTR390 UV Light Sensor ([#1432](https://github.com/kizniche/Mycodo/pull/1432))
  - Add "message_extra" to input options
  - Add Telegram grow bot check logging that appends `/status`, `/advies`, `/foto`, `/wortel`, `/trend`, and photo-upload summaries to the shared grow log
+ - Add the local `regulate_ph_ec_telegram.py` custom function scaffold and a multi-root `Mycodo.code-workspace` file for the active hydroponics development workspace
 
 ### Miscellaneous
 

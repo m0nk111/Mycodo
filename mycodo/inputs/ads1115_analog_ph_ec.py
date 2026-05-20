@@ -275,7 +275,14 @@ INPUT_INFORMATION = {
             'type': 'float',
             'default_value': 0.0,
             'name': 'EC cal data: V0 RO (internal)',
-            'phrase': 'EC calibration data: Voltage at RO/zero-EC water (0 µS/cm anchor point)'
+            'phrase': 'EC calibration data: Voltage at RO water'
+        },
+        {
+            'id': 'ec_cal_ec0',
+            'type': 'float',
+            'default_value': 0.0,
+            'name': 'EC cal data: EC0 RO (internal)',
+            'phrase': 'EC calibration data: EC at RO water'
         },
         {
             'id': 'ec_cal_t0',
@@ -321,7 +328,8 @@ INPUT_INFORMATION = {
         {
             'type': 'message',
             'default_value': """EC Calibration Actions: Optionally start with RO/deionised water for a zero-EC anchor point.
-            Place probe in RO water and press "Calibrate EC, slot 0 (RO water)".
+            Set the EC of your RO water in "Calibration standard EC" (e.g. 90), place probe in RO water
+            and press "Calibrate EC, slot 0 (RO water)".
             Then place in a solution of known EC, set the value in "Calibration standard EC", press slot 1.
             Repeat with a second standard and press slot 2. Three-point piecewise interpolation
             is used when the RO anchor is present; otherwise two-point linear is used.
@@ -409,6 +417,7 @@ class InputModule(AbstractInput):
         self.ph_cal_t2 = None
 
         self.ec_cal_v0 = None
+        self.ec_cal_ec0 = None
         self.ec_cal_t0 = None
         self.ec_cal_v1 = None
         self.ec_cal_ec1 = None
@@ -523,18 +532,20 @@ class InputModule(AbstractInput):
         v, std = self.get_volt_data_multisample(int(self.adc_channel_ec))
         temp = self.get_temp_data()
         t = temp if temp is not None else 25
-        target_ec = 0 if cal_slot == 0 else args_dict['calibration_ec']
+        target_ec = args_dict['calibration_ec']
         self.logger.info(
             "EC Cal slot {}: V={:.4f}V (σ={:.2f}mV), T={:.1f}°C, EC={}".format(
                 cal_slot, v, std * 1000, t, target_ec))
 
         if cal_slot == 0:
             self.ec_cal_v0 = v
+            self.ec_cal_ec0 = target_ec
             self.ec_cal_t0 = t
             self.set_custom_option("ec_cal_v0", v)
+            self.set_custom_option("ec_cal_ec0", target_ec)
             self.set_custom_option("ec_cal_t0", t)
             self.logger.info(
-                "EC Cal slot 0 (RO anchor): V={:.4f}V, T={:.1f}°C, EC=0 µS/cm".format(v, t))
+                "EC Cal slot 0: V={:.4f}V, T={:.1f}°C, EC={} µS/cm".format(v, t, target_ec))
         elif cal_slot == 1:
             self.ec_cal_v1 = v
             self.ec_cal_ec1 = args_dict['calibration_ec']
@@ -568,7 +579,7 @@ class InputModule(AbstractInput):
                         deviation_pct))
 
     def calibrate_ec_slot_ro(self, args_dict):
-        """Calibrate EC slot 0: RO/deionised water anchor (EC = 0 µS/cm)."""
+        """Calibrate EC slot 0: RO water anchor (uses entered EC value)."""
         self.calibrate_ec(0, args_dict)
 
     def calibrate_ec_slot_1(self, args_dict):
@@ -581,6 +592,7 @@ class InputModule(AbstractInput):
 
     def clear_ec_calibrate_slots(self, args_dict):
         self.delete_custom_option("ec_cal_v0")
+        self.delete_custom_option("ec_cal_ec0")
         self.delete_custom_option("ec_cal_t0")
         self.delete_custom_option("ec_cal_v1")
         self.delete_custom_option("ec_cal_ec1")
@@ -595,11 +607,16 @@ class InputModule(AbstractInput):
     def _piecewise_interp(x, xp, fp):
         """Piecewise linear interpolation (equivalent to numpy.interp).
 
-        Clamps to fp[0] below xp[0] and fp[-1] above xp[-1].
+        Extrapolates linearly below xp[0] (floored at 0 for EC).
+        Clamps to fp[-1] above xp[-1].
         xp must be sorted in ascending order.
         """
         if x <= xp[0]:
-            return fp[0]
+            # Extrapolate using first segment slope, floor at 0
+            if len(xp) >= 2 and xp[1] != xp[0]:
+                slope = (fp[1] - fp[0]) / (xp[1] - xp[0])
+                return max(0.0, fp[0] + slope * (x - xp[0]))
+            return max(0.0, fp[0])
         if x >= xp[-1]:
             return fp[-1]
         for i in range(len(xp) - 1):
@@ -781,8 +798,9 @@ class InputModule(AbstractInput):
             t0 = self.ec_cal_t0 if self.ec_cal_t0 is not None else 25.0
             v0_corr = self.viscosity_correction(self.ec_cal_v0, t0)
             # Sort points by voltage to guarantee monotonic xp for numpy.interp
+            ec0 = self.ec_cal_ec0 if self.ec_cal_ec0 is not None else 0.0
             points = sorted([
-                (v0_corr, 0.0),
+                (v0_corr, ec0),
                 (v1_corr, self.ec_cal_ec1),
                 (v2_corr, self.ec_cal_ec2),
             ])

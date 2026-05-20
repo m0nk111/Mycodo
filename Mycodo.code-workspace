@@ -1,0 +1,23 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../github-copilot-config"
+		},
+		{
+			"path": "../stepperheightcontrol"
+		},
+		{
+			"path": "../fridge-cam-firmware"
+		},
+		{
+			"path": "../Marlin"
+		},
+		{
+			"path": "../mycodo-config-private"
+		}
+	],
+	"settings": {}
+}
