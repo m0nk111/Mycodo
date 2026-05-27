@@ -17,6 +17,9 @@
 		},
 		{
 			"path": "../mycodo-config-private"
+		},
+		{
+			"path": "../HydroCodo"
 		}
 	],
 	"settings": {}
