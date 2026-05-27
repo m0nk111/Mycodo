@@ -29,6 +29,7 @@ import re
 import signal
 import sqlite3
 import sys
+import threading
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -120,11 +121,12 @@ VISION_UNSUPPORTED_USER_MESSAGE = (
     "Tekstchat werkt wel, maar /foto en /wortel nu niet."
 )
 
-GUARDIAN_QUEUE_STATUS_URL = "http://192.168.1.35:11434/v1/queue/status"
-GUARDIAN_ADMIN_LOAD_URL = "http://192.168.1.35:11434/admin/load"
-GUARDIAN_DEFAULT_TIMEOUT = 600
-GUARDIAN_RECOVER_503_RETRIES = 1
-GUARDIAN_RECOVER_RETRY_DELAY_S = 2
+GUARDIAN_QUEUE_STATUS_TIMEOUT_S = 5
+GUARDIAN_QUEUE_POLL_INTERVAL_S = 2.0
+GUARDIAN_DEFAULT_QUEUE_TIMEOUT_S = 300
+GUARDIAN_HTTP_TIMEOUT_BUFFER_S = 60
+GUARDIAN_DEFAULT_HTTP_TIMEOUT_S = 600
+GUARDIAN_CHAT_INFERENCE_DEADLINE_S = 180
 
 # Camera
 CAMERA_SNAPSHOT_URL = _env_or_default(
@@ -155,10 +157,28 @@ SENSOR_CONFIG = {
 # Track grow day/week from the date the current plant entered the NFT gutter.
 GROW_START_DATE = "2026-05-16"
 CURRENT_RUN_CONTEXT_TS = f"{GROW_START_DATE}T00:00:00"
+CURRENT_SITUATION_LOG_LIMIT = 8
+LEGACY_EC_STAGE_BAND_TEMPLATE_VARIANTS = (
+    {
+        'seedling': ((500.0, 700.0), (700.0, 800.0), (1000.0, 1200.0)),
+        'veg': ((1300.0, 1500.0), (1600.0, 1700.0), (1700.0, 1800.0), (1800.0, 1900.0)),
+        'bloom': ((1900.0, 2000.0), (2000.0, 2200.0), (2200.0, 2300.0), (2300.0, 2400.0)),
+        'ripen': ((1800.0, 2000.0),),
+        'flush': ((0.0, 800.0),),
+    },
+    {
+        'seedling': ((500.0, 700.0), (600.0, 800.0), (1000.0, 1200.0)),
+        'veg': ((1300.0, 1500.0), (1600.0, 1700.0), (1700.0, 1800.0), (1800.0, 1900.0)),
+        'bloom': ((1900.0, 2000.0), (2000.0, 2200.0), (2200.0, 2300.0), (2300.0, 2400.0)),
+        'ripen': ((1800.0, 2000.0),),
+        'flush': ((0.0, 800.0),),
+    },
+)
+
 EC_STAGE_BAND_TEMPLATES = {
-    'seedling': ((500.0, 700.0), (700.0, 800.0), (1000.0, 1200.0)),
-    'veg': ((1300.0, 1500.0), (1600.0, 1700.0), (1700.0, 1800.0), (1800.0, 1900.0)),
-    'bloom': ((1900.0, 2000.0), (2000.0, 2200.0), (2200.0, 2300.0), (2300.0, 2400.0)),
+    'seedling': ((500.0, 700.0), (600.0, 800.0), (1000.0, 1200.0)),
+    'veg': ((1300.0, 1500.0), (1500.0, 1700.0), (1600.0, 1800.0), (1700.0, 1900.0)),
+    'bloom': ((1800.0, 2000.0), (2000.0, 2200.0), (2100.0, 2300.0), (2200.0, 2400.0)),
     'ripen': ((1800.0, 2000.0),),
     'flush': ((0.0, 800.0),),
 }
@@ -200,13 +220,17 @@ def _expand_ec_stage_bands(template: tuple[tuple[float, float], ...], weeks: int
     return expanded
 
 
-def _build_ec_stage_profile_bands(stage_weeks: dict[str, int]) -> dict[int, tuple[float, float]]:
+def _build_ec_stage_profile_bands(
+    stage_weeks: dict[str, int],
+    stage_templates: dict[str, tuple[tuple[float, float], ...]] | None = None,
+) -> dict[int, tuple[float, float]]:
     """Build a full weekly EC map from stage durations."""
     week = 1
     bands: dict[int, tuple[float, float]] = {}
+    templates = stage_templates or EC_STAGE_BAND_TEMPLATES
     for stage_name in ('seedling', 'veg', 'bloom', 'ripen', 'flush'):
         weeks = _positive_int(stage_weeks.get(stage_name), DEFAULT_EC_STAGE_WEEKS[stage_name])
-        for band in _expand_ec_stage_bands(EC_STAGE_BAND_TEMPLATES[stage_name], weeks):
+        for band in _expand_ec_stage_bands(templates[stage_name], weeks):
             bands[week] = band
             week += 1
     return bands
@@ -496,6 +520,50 @@ def append_grow_log_check(check_name: str, summary: str):
         log.warning("[GROW_LOG] Failed to append %s: %s", check_name, e)
 
 
+def _current_run_grow_log_context(limit: int = CURRENT_SITUATION_LOG_LIMIT) -> list[str]:
+    """Load recent grow-log event rows for the active run only."""
+    if not GROW_LOG_PATH.exists():
+        return []
+
+    try:
+        text = GROW_LOG_PATH.read_text(encoding='utf-8')
+    except Exception as e:
+        log.warning("[GROW_LOG] Failed to read current run context: %s", e)
+        return []
+
+    in_event_table = False
+    entries: list[str] = []
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+
+        if line.startswith("### Bloom Phase"):
+            break
+
+        if line == "| Date | Event | Notes |":
+            in_event_table = True
+            continue
+
+        if not in_event_table or not line.startswith("|") or line.startswith("|---"):
+            continue
+
+        columns = [col.strip() for col in line.strip("|").split("|")]
+        if len(columns) < 3:
+            continue
+
+        entry_date = columns[0].lstrip("~").strip()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", entry_date):
+            continue
+        if entry_date < GROW_START_DATE:
+            continue
+
+        event = re.sub(r"\*\*", "", columns[1]).strip()
+        notes = _sanitize_grow_log_summary(columns[2], limit=220)
+        entries.append(f"- [{entry_date}] {event}: {notes}")
+
+    return entries[-limit:]
+
+
 # ── Dosing History ────────────────────────────────────────────────────────────
 
 
@@ -585,6 +653,10 @@ def read_regulator_config() -> dict | None:
             schedule_mode = (options.get('ec_schedule_mode') or 'auto').strip().lower()
             explicit_bands = _parse_ec_weekly_bands(options.get('ec_weekly_bands'))
             default_bands = _build_ec_stage_profile_bands(DEFAULT_EC_STAGE_WEEKS)
+            legacy_default_band_maps = [
+                _build_ec_stage_profile_bands(DEFAULT_EC_STAGE_WEEKS, templates)
+                for templates in LEGACY_EC_STAGE_BAND_TEMPLATE_VARIANTS
+            ]
             stage_profile_bands = _build_ec_stage_profile_bands(_stage_profile_week_counts())
 
             if schedule_mode == 'legacy_percent':
@@ -595,7 +667,7 @@ def read_regulator_config() -> dict | None:
                 return stage_profile_bands, 'stage_profile'
             if schedule_mode == 'stage_profile':
                 return stage_profile_bands, 'stage_profile'
-            if explicit_bands and explicit_bands != default_bands:
+            if explicit_bands and explicit_bands != default_bands and explicit_bands not in legacy_default_band_maps:
                 return explicit_bands, 'weekly_bands'
             if stage_profile_bands:
                 return stage_profile_bands, 'stage_profile'
@@ -806,25 +878,22 @@ def vision_analyze_multi(photos: list[bytes], question: str = "") -> str | None:
         resp = requests.post(
             LLM_API_URL,
             headers=headers,
-            json={
-                "model": VISION_MODEL,
-                "messages": [{"role": "user", "content": content}],
-                "max_tokens": 1024,
-                "temperature": 0.4,
-                "stream": False,
-            },
+            json=_guardian_chat_payload(
+                model=VISION_MODEL,
+                messages=[{"role": "user", "content": content}],
+                max_tokens=1024,
+                temperature=0.4,
+            ),
             timeout=300,
         )
         if resp.ok:
             data = resp.json()
             usage = data.get("usage", {})
-            choices = data.get("choices", [])
-            if choices:
-                result = choices[0].get("message", {}).get("content", "").strip()
+            result = _extract_assistant_text(data, "VISION")
+            if result:
                 log.info("[VISION:resp] tokens=%s len=%d: %s",
                          usage.get("total_tokens", "?"), len(result), result[:200])
                 return result
-            log.warning("[VISION:err] No choices in response")
             LAST_VISION_ERROR = "⚠️ Vision backend gaf geen bruikbare output terug."
         else:
             log.warning("[VISION:err] HTTP %s: %s", resp.status_code, resp.text[:200])
@@ -920,100 +989,12 @@ def tg_get_updates(offset: int | None = None, timeout: int = 30) -> list:
 # ── LLM Chat ─────────────────────────────────────────────────────────────────
 
 
-
-def _guardian_headers() -> dict:
-    """Build Guardian request headers with Bearer auth."""
-    headers = {"Content-Type": "application/json"}
-    if LLM_API_KEY:
-        headers["Authorization"] = f"Bearer {LLM_API_KEY}"
-    return headers
-
-def _guardian_log_queue_headers(resp: requests.Response, tag: str):
-    """Log queue metadata headers exposed by Guardian."""
-    req_id = resp.headers.get("X-Request-Id", "")
-    wait_ms = resp.headers.get("X-Queue-Wait-Ms", "")
-    if req_id or wait_ms:
-        log.info("[%s] queue request_id=%s wait_ms=%s", tag, req_id or "-", wait_ms or "-")
-
-def _guardian_queue_status_snapshot(timeout_s: int = 5) -> dict | None:
-    """Get current queue status for diagnostics."""
+def _positive_int(value, default: int) -> int:
+    """Return a positive integer or the provided default."""
     try:
-        resp = requests.get(GUARDIAN_QUEUE_STATUS_URL, headers=_guardian_headers(), timeout=timeout_s)
-        if resp.ok:
-            return resp.json()
-    except Exception:
-        pass
-    return None
-
-def _guardian_force_load_model(model: str) -> bool:
-    """Attempt to jump-start a stuck model via /admin/load."""
-    if not model or not GUARDIAN_ADMIN_LOAD_URL:
-        return False
-    try:
-        resp = requests.post(GUARDIAN_ADMIN_LOAD_URL, headers=_guardian_headers(), json={"model": model}, timeout=10)
-        if resp.ok:
-            log.warning("[GUARDIAN] Forced model load OK: %s", model)
-            return True
-        log.warning("[GUARDIAN] Force-load failed HTTP %s: %s", resp.status_code, resp.text[:200])
-        return False
-    except Exception as e:
-        log.warning("[GUARDIAN] Force-load error: %s", e)
-        return False
-
-def _guardian_post_chat(payload: dict, timeout_s: int, tag: str) -> requests.Response | None:
-    """POST to Guardian chat endpoint with queue resilience.
-    
-    If Guardian is serving other clients (e.g. 429 queue full, or requests.Timeout),
-    we patiently wait our turn instead of dropping the Telegram message.
-    """
-    t0_global = time.monotonic()
-    max_wait_total = 1800  # Give up after 30 minutes total queue wait
-
-    while (time.monotonic() - t0_global) < max_wait_total:
-        try:
-            resp = requests.post(
-                LLM_API_URL,
-                headers=_guardian_headers(),
-                json=payload,
-                timeout=timeout_s,
-            )
-            _guardian_log_queue_headers(resp, tag)
-
-            if resp.status_code == 503:
-                model = payload.get("model", "")
-                log.warning("[%s] HTTP 503, trying Guardian recovery for model=%s", tag, model)
-                _guardian_force_load_model(model)
-                time.sleep(GUARDIAN_RECOVER_RETRY_DELAY_S)
-                continue
-                
-            if resp.status_code == 429:
-                wait_s = 30
-                q = _guardian_queue_status_snapshot()
-                if q:
-                    wait_s = max(10, float(q.get("your_wait_s", 30) or 30))
-                    log.warning("[%s] Guardian busy (429). Pos=%s, Active=%s, Len=%s. Retrying in %.1fs...",
-                                tag, q.get("your_position", "?"),
-                                q.get("active_count", "?"), q.get("queue_length", "?"), wait_s)
-                else:
-                    log.warning("[%s] Guardian busy (429). Retrying in 30s...", tag)
-                
-                time.sleep(min(wait_s, 60))
-                continue
-
-            return resp
-
-        except requests.exceptions.Timeout:
-            log.warning("[%s] Local timeout after %ss, Guardian might be very busy. Retrying...", tag, timeout_s)
-            time.sleep(5)
-            continue
-            
-        except Exception as e:
-            log.error("[%s] Unexpected request error: %s", tag, e)
-            time.sleep(5)
-            continue
-
-    log.error("[%s] Gave up after waiting >30m for Guardian.", tag)
-    return None
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return default
 
 
 def _guardian_headers() -> dict:
@@ -1023,6 +1004,46 @@ def _guardian_headers() -> dict:
         headers["Authorization"] = f"Bearer {LLM_API_KEY}"
     return headers
 
+
+def _guardian_base_url() -> str:
+    """Return the Guardian base URL derived from the configured chat endpoint."""
+    url = (LLM_API_URL or "").strip()
+    if "/v1/" in url:
+        return url.split("/v1/", 1)[0]
+    if "/api/" in url:
+        return url.split("/api/", 1)[0]
+    return url.rsplit("/", 1)[0] if "/" in url else url
+
+
+def _guardian_queue_status_url() -> str:
+    """Return the Guardian queue status URL."""
+    base = _guardian_base_url()
+    return f"{base}/v1/queue/status" if base else ""
+
+
+def _guardian_admin_load_url() -> str:
+    """Return the Guardian admin load URL."""
+    base = _guardian_base_url()
+    return f"{base}/admin/load" if base else ""
+
+
+def _guardian_request_url(request_id: str) -> str:
+    """Return the Guardian request lifecycle URL for a request ID."""
+    base = _guardian_base_url()
+    request_id = (request_id or "").strip()
+    return f"{base}/v1/queue/requests/{request_id}" if base and request_id else ""
+
+
+def _guardian_error_detail(resp: requests.Response) -> dict:
+    """Extract Guardian's structured error detail when present."""
+    try:
+        payload = resp.json()
+    except ValueError:
+        return {}
+    detail = payload.get("detail", {})
+    return detail if isinstance(detail, dict) else {}
+
+
 def _guardian_log_queue_headers(resp: requests.Response, tag: str):
     """Log queue metadata headers exposed by Guardian."""
     req_id = resp.headers.get("X-Request-Id", "")
@@ -1030,22 +1051,28 @@ def _guardian_log_queue_headers(resp: requests.Response, tag: str):
     if req_id or wait_ms:
         log.info("[%s] queue request_id=%s wait_ms=%s", tag, req_id or "-", wait_ms or "-")
 
-def _guardian_queue_status_snapshot(timeout_s: int = 5) -> dict | None:
-    """Get current queue status for diagnostics."""
+
+def _guardian_queue_status_snapshot(timeout_s: int = GUARDIAN_QUEUE_STATUS_TIMEOUT_S) -> dict | None:
+    """Get current queue state for lifecycle monitoring."""
+    queue_url = _guardian_queue_status_url()
+    if not queue_url:
+        return None
     try:
-        resp = requests.get(GUARDIAN_QUEUE_STATUS_URL, headers=_guardian_headers(), timeout=timeout_s)
+        resp = requests.get(queue_url, headers=_guardian_headers(), timeout=timeout_s)
         if resp.ok:
             return resp.json()
     except Exception:
         pass
     return None
 
+
 def _guardian_force_load_model(model: str) -> bool:
-    """Attempt to jump-start a stuck model via /admin/load."""
-    if not model or not GUARDIAN_ADMIN_LOAD_URL:
+    """Attempt to re-trigger model loading after a Guardian 503."""
+    admin_url = _guardian_admin_load_url()
+    if not model or not admin_url:
         return False
     try:
-        resp = requests.post(GUARDIAN_ADMIN_LOAD_URL, headers=_guardian_headers(), json={"model": model}, timeout=10)
+        resp = requests.post(admin_url, headers=_guardian_headers(), json={"model": model}, timeout=10)
         if resp.ok:
             log.warning("[GUARDIAN] Forced model load OK: %s", model)
             return True
@@ -1055,59 +1082,239 @@ def _guardian_force_load_model(model: str) -> bool:
         log.warning("[GUARDIAN] Force-load error: %s", e)
         return False
 
-def _guardian_post_chat(payload: dict, timeout_s: int, tag: str) -> requests.Response | None:
-    """POST to Guardian chat endpoint with queue resilience.
-    
-    If Guardian is serving other clients (e.g. 429 queue full, or requests.Timeout),
-    we patiently wait our turn instead of dropping the Telegram message.
-    """
-    t0_global = time.monotonic()
-    max_wait_total = 1800  # Give up after 30 minutes total queue wait
 
-    while (time.monotonic() - t0_global) < max_wait_total:
-        try:
-            resp = requests.post(
-                LLM_API_URL,
-                headers=_guardian_headers(),
-                json=payload,
-                timeout=timeout_s,
+def _guardian_cancel_request(request_id: str, tag: str, reason: str) -> bool:
+    """Ask Guardian to cancel a queued or running request."""
+    request_url = _guardian_request_url(request_id)
+    if not request_url:
+        return False
+    try:
+        resp = requests.delete(request_url, headers=_guardian_headers(), timeout=GUARDIAN_QUEUE_STATUS_TIMEOUT_S)
+        if resp.ok:
+            log.warning("[%s] Guardian cancel requested for request_id=%s (%s)", tag, request_id, reason)
+            return True
+        log.warning(
+            "[%s] Guardian cancel failed HTTP %s for request_id=%s: %s",
+            tag, resp.status_code, request_id, resp.text[:200],
+        )
+    except Exception as e:
+        log.warning("[%s] Guardian cancel error for request_id=%s: %s", tag, request_id, e)
+    return False
+
+
+def _guardian_http_timeout(inference_deadline_s: int) -> int:
+    """Size the HTTP timeout from Guardian's advertised queue budget."""
+    queue = _guardian_queue_status_snapshot()
+    queue_budget = GUARDIAN_DEFAULT_QUEUE_TIMEOUT_S
+    if queue:
+        queue_budget = _positive_int(queue.get("queue_timeout_s"), GUARDIAN_DEFAULT_QUEUE_TIMEOUT_S)
+    return max(
+        GUARDIAN_DEFAULT_HTTP_TIMEOUT_S,
+        queue_budget + inference_deadline_s + GUARDIAN_HTTP_TIMEOUT_BUFFER_S,
+    )
+
+
+def _guardian_monitor_request(
+    stop_event: threading.Event,
+    state: dict,
+    tag: str,
+    inference_deadline_s: int,
+):
+    """Poll queue status while a blocking Guardian request is in flight."""
+    last_phase = None
+    last_position = None
+    while not stop_event.wait(GUARDIAN_QUEUE_POLL_INTERVAL_S):
+        queue = _guardian_queue_status_snapshot()
+        if not queue:
+            continue
+
+        phase = (queue.get("your_status") or "idle").strip().lower()
+        request_id = (queue.get("your_request_id") or "").strip()
+        if request_id:
+            state["request_id"] = request_id
+        position = queue.get("your_position", -1)
+
+        if phase == "queued":
+            wait_s = float(queue.get("your_wait_s", 0) or 0)
+            if phase != last_phase or position != last_position:
+                log.info("[%s] Guardian queued pos=%s wait=%.0fs", tag, position, wait_s)
+        elif phase == "running":
+            elapsed_s = float(queue.get("your_elapsed_s", 0) or 0)
+            if phase != last_phase:
+                log.info("[%s] Guardian running request_id=%s", tag, request_id or "-")
+            if request_id and elapsed_s > inference_deadline_s and not state.get("cancel_requested"):
+                state["cancel_requested"] = True
+                log.warning(
+                    "[%s] Guardian inference deadline exceeded at %.0fs; cancelling request_id=%s",
+                    tag, elapsed_s, request_id,
+                )
+                _guardian_cancel_request(request_id, tag, "inference_deadline_exceeded")
+        elif phase == "cancelling" and phase != last_phase:
+            log.warning("[%s] Guardian request cancelling request_id=%s", tag, request_id or "-")
+        elif phase == "cancelled" and phase != last_phase:
+            log.warning("[%s] Guardian request cancelled request_id=%s", tag, request_id or "-")
+
+        last_phase = phase
+        last_position = position
+
+
+def _guardian_post_chat(payload: dict, inference_deadline_s: int, tag: str) -> requests.Response | None:
+    """POST to Guardian using its blocking queue contract plus phase polling."""
+    http_timeout_s = _guardian_http_timeout(inference_deadline_s)
+    monitor_state: dict[str, str | bool] = {}
+    stop_event = threading.Event()
+    monitor = threading.Thread(
+        target=_guardian_monitor_request,
+        args=(stop_event, monitor_state, tag, inference_deadline_s),
+        daemon=True,
+    )
+    monitor.start()
+
+    try:
+        resp = requests.post(
+            LLM_API_URL,
+            headers=_guardian_headers(),
+            json=payload,
+            timeout=http_timeout_s,
+        )
+    except requests.exceptions.Timeout:
+        request_id = str(monitor_state.get("request_id") or "")
+        if request_id:
+            _guardian_cancel_request(request_id, tag, "client_http_timeout")
+        log.warning("[%s] Guardian client-timeout after %ss", tag, http_timeout_s)
+        return None
+    except requests.exceptions.ConnectionError as e:
+        log.warning("[%s] Guardian connection error: %s", tag, e)
+        return None
+    except Exception as e:
+        log.error("[%s] Guardian request error: %s", tag, e)
+        return None
+    finally:
+        stop_event.set()
+        monitor.join(timeout=1)
+
+    _guardian_log_queue_headers(resp, tag)
+    detail = _guardian_error_detail(resp)
+
+    if resp.status_code == 503:
+        model = payload.get("model", "")
+        log.warning("[%s] Guardian HTTP 503 for model=%s", tag, model)
+        if _guardian_force_load_model(model):
+            log.warning("[%s] Guardian model load retriggered after 503; not retrying blind", tag)
+        return resp
+
+    if resp.status_code == 401:
+        log.warning("[%s] Guardian auth rejected (401)", tag)
+        return resp
+
+    if resp.status_code == 404 and detail.get("error") == "model_not_served":
+        log.warning(
+            "[%s] Guardian model_not_served requested_model=%s",
+            tag,
+            detail.get("requested_model") or payload.get("model", "?"),
+        )
+        return resp
+
+    if resp.status_code == 409 and detail.get("error") == "queue_admission_rejected":
+        log.warning(
+            "[%s] Guardian queue admission rejected existing_request_id=%s existing_status=%s",
+            tag,
+            detail.get("existing_request_id") or "-",
+            detail.get("existing_status") or detail.get("reason") or "busy",
+        )
+        return resp
+
+    if resp.status_code == 429:
+        queue = _guardian_queue_status_snapshot()
+        if queue:
+            log.warning(
+                "[%s] Guardian legacy 429 busy pos=%s active=%s queue=%s",
+                tag,
+                queue.get("your_position", "?"),
+                queue.get("active_count", "?"),
+                queue.get("queue_length", "?"),
             )
-            _guardian_log_queue_headers(resp, tag)
+        else:
+            log.warning("[%s] Guardian legacy 429 busy", tag)
+        return resp
 
-            if resp.status_code == 503:
-                model = payload.get("model", "")
-                log.warning("[%s] HTTP 503, trying Guardian recovery for model=%s", tag, model)
-                _guardian_force_load_model(model)
-                time.sleep(GUARDIAN_RECOVER_RETRY_DELAY_S)
-                continue
-                
-            if resp.status_code == 429:
-                wait_s = 30
-                q = _guardian_queue_status_snapshot()
-                if q:
-                    wait_s = max(10, float(q.get("your_wait_s", 30) or 30))
-                    log.warning("[%s] Guardian busy (429). Pos=%s, Active=%s, Len=%s. Retrying in %.1fs...",
-                                tag, q.get("your_position", "?"),
-                                q.get("active_count", "?"), q.get("queue_length", "?"), wait_s)
-                else:
-                    log.warning("[%s] Guardian busy (429). Retrying in 30s...", tag)
-                
-                time.sleep(min(wait_s, 60))
-                continue
+    if resp.status_code == 499:
+        log.warning(
+            "[%s] Guardian request cancelled request_id=%s message=%s",
+            tag,
+            detail.get("request_id") or monitor_state.get("request_id") or "-",
+            detail.get("message") or "request_cancelled",
+        )
+        return resp
 
-            return resp
+    return resp
 
-        except requests.exceptions.Timeout:
-            log.warning("[%s] Local timeout after %ss, Guardian might be very busy. Retrying...", tag, timeout_s)
-            time.sleep(5)
-            continue
-            
-        except Exception as e:
-            log.error("[%s] Unexpected request error: %s", tag, e)
-            time.sleep(5)
-            continue
 
-    log.error("[%s] Gave up after waiting >30m for Guardian.", tag)
+def _guardian_chat_payload(
+    model: str,
+    messages: list[dict],
+    max_tokens: int,
+    temperature: float,
+    stream: bool = False,
+) -> dict:
+    """Build a Guardian chat payload with thinking disabled."""
+    return {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "stream": stream,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+
+
+def _extract_assistant_text(data: dict, tag: str) -> str | None:
+    """Extract the assistant text from OpenAI-compatible response shapes."""
+    choices = data.get("choices", [])
+    if not choices:
+        log.warning("[%s:err] No choices in response", tag)
+        return None
+
+    choice = choices[0]
+    message = choice.get("message", {})
+    content = message.get("content", "")
+
+    if isinstance(content, str):
+        result = content.strip()
+    elif isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                text = item.strip()
+            elif isinstance(item, dict):
+                text = item.get("text") or item.get("content") or ""
+                text = text.strip() if isinstance(text, str) else ""
+            else:
+                text = ""
+            if text:
+                parts.append(text)
+        result = "\n".join(parts).strip()
+    elif content is None:
+        result = ""
+    else:
+        result = str(content).strip()
+
+    if result:
+        return result
+
+    output_text = choice.get("text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+
+    reasoning = message.get("reasoning_content", "")
+    if isinstance(reasoning, str) and reasoning.strip():
+        log.warning(
+            "[%s:err] Empty assistant content; Guardian returned reasoning_content only for model=%s",
+            tag,
+            data.get("model", "?"),
+        )
+    else:
+        log.warning("[%s:err] Assistant content empty in response", tag)
     return None
 
 def llm_chat(messages: list[dict]) -> str | None:
@@ -1118,14 +1325,13 @@ def llm_chat(messages: list[dict]) -> str | None:
     t0 = time.monotonic()
     try:
         resp = _guardian_post_chat(
-            payload={
-                "model": LLM_MODEL,
-                "messages": messages,
-                "max_tokens": 1024,
-                "temperature": 0.5,
-                "stream": False,
-            },
-            timeout_s=GUARDIAN_DEFAULT_TIMEOUT,
+            payload=_guardian_chat_payload(
+                model=LLM_MODEL,
+                messages=messages,
+                max_tokens=1024,
+                temperature=0.5,
+            ),
+            inference_deadline_s=GUARDIAN_CHAT_INFERENCE_DEADLINE_S,
             tag="LLM"
         )
         if not resp or not resp.ok:
@@ -1134,13 +1340,11 @@ def llm_chat(messages: list[dict]) -> str | None:
 
         data = resp.json()
         usage = data.get("usage", {})
-        choices = data.get("choices", [])
-        if choices:
-            result = choices[0].get("message", {}).get("content", "").strip()
+        result = _extract_assistant_text(data, "LLM")
+        if result:
             log.info("[LLM:resp] tokens=%s len=%d: %s",
                      usage.get("total_tokens", "?"), len(result), result[:200])
             return result
-        log.warning("[LLM:err] No choices in response")
         return None
     except Exception as e:
         log.error("[LLM:err] %s", e)
@@ -1352,6 +1556,17 @@ class ConversationManager:
                     "EC-band hoog oogt voor week 1. Beschrijf dat dan als een "
                     "configuratiekeuze van de regulator, niet als een meetfout."
                 )
+
+        current_situation = _current_run_grow_log_context()
+        if current_situation:
+            parts.append("")
+            parts.append("### Huidige Situatie Uit Grow Log")
+            parts.append(
+                "Gebruik deze recente grow-log feiten als primaire context voor handmatige "
+                "ingrepen, observaties, en de actuele toestand van de huidige run. "
+                "Als oudere herinneringen hiermee botsen, volg dan deze sectie."
+            )
+            parts.extend(current_situation)
 
         # Trends
         trends = read_trends()
