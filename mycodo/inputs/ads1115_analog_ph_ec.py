@@ -15,6 +15,36 @@ from mycodo.utils.system_pi import get_measurement
 from mycodo.utils.system_pi import return_measurement_info
 
 
+def constraints_pass_oversample_count(mod_input, value):
+    """
+    Check if oversample count is at least 7 (required for IQR filtering).
+    :param mod_input: SQL object with user-saved options
+    :param value: int
+    :return: tuple (bool, list[str], object): (all_passed, errors, mod_input)
+    """
+    errors = []
+    all_passed = True
+    if value < 7:
+        all_passed = False
+        errors.append("Must be at least 7 for IQR filtering")
+    return all_passed, errors, mod_input
+
+
+def constraints_pass_calibration_samples(mod_input, value):
+    """
+    Check if calibration sample count is at least 5 (required for reliable calibration).
+    :param mod_input: SQL object with user-saved options
+    :param value: int
+    :return: tuple (bool, list[str], object): (all_passed, errors, mod_input)
+    """
+    errors = []
+    all_passed = True
+    if value < 5:
+        all_passed = False
+        errors.append("Must be at least 5 for reliable calibration")
+    return all_passed, errors, mod_input
+
+
 def execute_at_modification(
         messages,
         mod_input,
@@ -133,17 +163,25 @@ INPUT_INFORMATION = {
             'id': 'oversample_count',
             'type': 'integer',
             'default_value': 15,
-            'constraints_pass': constraints_pass_positive_value,
-            'name': 'Samples per Measurement',
-            'phrase': 'Number of ADC readings per measurement (median + IQR filtering). Min 7.'
+            'constraints_pass': constraints_pass_oversample_count,
+            'name': lazy_gettext('Samples per Measurement'),
+            'phrase': lazy_gettext('Number of ADC readings per measurement (median + IQR filtering).')
         },
         {
             'id': 'calibration_samples',
             'type': 'integer',
             'default_value': 20,
+            'constraints_pass': constraints_pass_calibration_samples,
+            'name': lazy_gettext('Calibration Samples'),
+            'phrase': lazy_gettext('Number of measurements to collect during calibration.')
+        },
+        {
+            'id': 'voltage_fault_threshold',
+            'type': 'float',
+            'default_value': 3.7,
             'constraints_pass': constraints_pass_positive_value,
-            'name': 'Calibration Samples',
-            'phrase': 'Number of measurements to collect during calibration.'
+            'name': lazy_gettext('Voltage Fault Threshold'),
+            'phrase': lazy_gettext('Voltage above which a sensor disconnect or hardware fault is assumed (V). Set based on your sensor maximum output voltage.')
         },
         {
             'type': 'message',
@@ -405,6 +443,7 @@ class InputModule(AbstractInput):
         self.adc_channel_ec = None
         self.oversample_count = None
         self.calibration_samples = None
+        self.voltage_fault_threshold = None
         self.temperature_comp_meas_device_id = None
         self.temperature_comp_meas_measurement_id = None
         self.max_age = None
@@ -490,7 +529,7 @@ class InputModule(AbstractInput):
         # Verify: read with same method as get_measurement() and check result
         time.sleep(1)
         verify_v = self.get_volt_data(int(self.adc_channel_ph))
-        verify_ph = self.convert_volt_to_ph(verify_v, temp)
+        verify_ph = self.convert_volt_to_ph(verify_v, t)
         deviation = abs(verify_ph - args_dict['calibration_ph'])
         self.logger.info(
             "pH Cal VERIFY: V={:.4f}V => pH={:.3f} (target={}, deviation={:.3f})".format(
@@ -565,7 +604,7 @@ class InputModule(AbstractInput):
         if cal_slot != 0 and self.ec_cal_v1 is not None and self.ec_cal_v2 is not None:
             time.sleep(1)
             verify_v = self.get_volt_data(int(self.adc_channel_ec))
-            verify_ec = self.convert_volt_to_ec(verify_v, temp)
+            verify_ec = self.convert_volt_to_ec(verify_v, t)
             if args_dict['calibration_ec'] > 0:
                 deviation_pct = abs(verify_ec - args_dict['calibration_ec']) / args_dict['calibration_ec'] * 100
             else:
@@ -687,6 +726,10 @@ class InputModule(AbstractInput):
         The ADS1115 on Raspberry Pi exhibits occasional extreme voltage spikes
         (~1.5% of readings). Using median instead of mean makes the result
         immune to these outliers.
+
+        Performance: ~18ms per sample (10ms sleep + ~8ms ADC conversion at 128 SPS).
+        Default 15 samples ≈ 270ms per channel. At higher gains (8/16), ADS1115
+        data rate may be lower.
         """
         chan = self.analog_in(self.adc, channel)
         self.adc.gain = self.adc_gain
@@ -703,7 +746,9 @@ class InputModule(AbstractInput):
             q1 = sorted_r[len(sorted_r) // 4]
             q3 = sorted_r[3 * len(sorted_r) // 4]
             iqr = q3 - q1
-            fence = 3.0 * max(iqr, 0.002)  # 2mV minimum IQR floor
+            # 2mV floor prevents overly tight fences when signal is very stable
+            # (without floor, IQR≈0 would reject everything as a "spike")
+            fence = 3.0 * max(iqr, 0.002)
             lower, upper = q1 - fence, q3 + fence
             filtered = [r for r in readings if lower <= r <= upper]
             spikes = len(readings) - len(filtered)
@@ -725,6 +770,11 @@ class InputModule(AbstractInput):
 
         Uses the same measurement method as get_measurement() to avoid
         systematic offset between calibration and measurement.
+
+        Note: Default takes ~15s (20 readings × 0.5s interval, where each
+        reading internally oversamples with IQR filtering taking ~270ms).
+        This nested oversampling means default calibration performs
+        20 × 15 = 300 ADC reads total.
 
         Returns (median_voltage, std_deviation).
         """
@@ -827,15 +877,18 @@ class InputModule(AbstractInput):
 
         self.return_dict = copy.deepcopy(measurements_dict)
 
+        fault_threshold = self.voltage_fault_threshold if self.voltage_fault_threshold else 3.7
+
         if self.is_enabled(0):  # pH
             volt = self.get_volt_data(int(self.adc_channel_ph))
 
-            # Sanity Check for disconnected/loose wire (pH sensor range approx 0-3.0V)
-            # DFRobot pH 2.0 = 0V, pH 7.0 = 1.5V (typ), pH 14.0 = 3.0V.
-            # Isolator might push slightly higher, but >3.7V is almost certainly a fault.
-            if volt > 3.7:
-                 self.logger.error("pH Voltage {:.4f}V > 3.7V! Possible disconnect or hardware fault.".format(volt))
-                 self.value_set(0, None) # Return None to prevent erratic control behavior
+            # Sanity check: voltage above threshold likely indicates
+            # a disconnected probe, loose wire, or hardware fault.
+            if volt > fault_threshold:
+                self.logger.error(
+                    "pH Voltage {:.4f}V > {:.1f}V! Possible disconnect or hardware fault.".format(
+                        volt, fault_threshold))
+                # Leave value unset to skip this measurement cycle
             else:
                 temp = self.get_temp_data()
                 ph = self.convert_volt_to_ph(volt, temp)
@@ -845,11 +898,13 @@ class InputModule(AbstractInput):
         if self.is_enabled(1):  # EC
             volt = self.get_volt_data(int(self.adc_channel_ec))
 
-            # Sanity Check: DFRobot EC max output is ~3.4V.
-            # ADS1115 open input or short to 5V will read >4.0V on gain 1.
-            if volt > 3.7:
-                 self.logger.error("EC Voltage {:.4f}V > 3.7V! Possible disconnect or hardware fault.".format(volt))
-                 self.value_set(1, None) # Return None to prevent erratic control behavior
+            # Sanity check: voltage above threshold likely indicates
+            # a disconnected probe, loose wire, or hardware fault.
+            if volt > fault_threshold:
+                self.logger.error(
+                    "EC Voltage {:.4f}V > {:.1f}V! Possible disconnect or hardware fault.".format(
+                        volt, fault_threshold))
+                # Leave value unset to skip this measurement cycle
             else:
                 temp = self.get_temp_data()
                 ec = self.convert_volt_to_ec(volt, temp)
