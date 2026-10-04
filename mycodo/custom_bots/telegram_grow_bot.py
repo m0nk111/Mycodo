@@ -45,6 +45,7 @@ from mycodo.utils.influx import read_influxdb_single, query_flux
 # Mycodo DB for dosing history and runtime credential fallback
 MYCODO_DB = "/opt/Mycodo/databases/mycodo.db"
 REGULATOR_UID = "1b2777f0-e3e5-4ec8-adfb-bcd045e95f42"
+CANNA_REGULATOR_TYPE = "CANNA_AQUA_REGULATOR"
 
 
 def _read_regulator_custom_options() -> dict:
@@ -306,25 +307,25 @@ De gebruiker praat met je via Telegram. Je bent vriendelijk, direct, en antwoord
 ### Doseerpomp Mapping (8× NKP-DC-S06B peristaltisch, HW-283 relay, Active LOW)
 | Pomp | Product | ml/min |
 |------|---------|--------|
-| 1 | Sensi A (EC regulatie) | 47.4 |
-| 2 | Sensi B (EC regulatie) | 48.0 |
-| 3 | B-52 (vitamine boost) | 48.0 |
-| 4 | Voodoo Juice (rhizobacteriën) | 48.0 |
-| 5 | Big Bud (bloom booster) | 48.0 |
-| 6 | Bud Candy (suikers, bloom) | 48.0 |
-| 7 | Overdrive (late bloom finisher) | 48.0 |
-| 8 | pH Down (CANNA pH- Blüte PRO, 59% H3PO4, verdund 1:5) | 47.0 |
+| 1 | Athena Cleanse | 47.62 |
+| 2 | DEFECT / NIET GEBRUIKEN | — |
+| 3 | CANNABOOST Accelerator | 48.86 |
+| 4 | Reserve | 44.05 |
+| 5 | CANNA Aqua Flores A | 52.63 |
+| 6 | CANNA Aqua Flores B | 52.00 |
+| 7 | CANNA PK 13/14 | 46.37 |
+| 8 | CANNA pH- | 48.00 |
 
-### Nutriëntenschema (AN Sensi Grow, ml/L/week — /7 voor dagelijks)
-Week 1-2: B-52 2.0, Voodoo Juice 2.0
-Week 3-4: B-52 2.0
-Week 5+: alleen basis A+B (EC regulatie)
-Bloom pompen (5-7) pas bij bloei.
+### CANNA bloei-herstart
+- Feitelijke plantdatum blijft 2026-05-16; alleen het voedingsschema herstart op 2026-08-02 als week 9.
+- Aqua Flores A/B wordt in gelijke milliliters met EC-feedback naar totaal 2.1 mS/cm gebracht.
+- PK 13/14 is uitsluitend toegestaan van 2026-08-02 t/m 2026-08-08.
+- CANNABOOST wordt alleen incidenteel en bewust gedoseerd, nooit automatisch.
+- Athena Cleanse is minimaal 24 uur vóór Boost geblokkeerd en na Boost tot de volgende volledige reservoirverversing.
 
 ### Water
-- Vulwater: RO (osmosewater), ~0 µS/cm
-- pH Down: CANNA pH- Blüte PRO 59% H3PO4, verdund 1:5 voor veiligheid
-- pH Perfect: AN Sensi A+B buffert pH automatisch — pH Down alleen bij > setpoint
+- Huidige vulling is vers kraanwater; gebruik altijd de live EC-meting als bronwaterbaseline.
+- Regel pH pas nadat CANNA Aqua A/B en additieven volledig zijn gemengd.
 
 ### Grow Geschiedenis
 - Run #1: MISLUKT door wortelrot (aquaponics, wortels nooit getrimd, lage flow)
@@ -333,6 +334,8 @@ Bloom pompen (5-7) pas bij bloei.
 - Geleerd: NFT wortels MOETEN geïnspecteerd/getrimd worden, steenwol = te nat
 - Huidige run: zaad/plant v4 in pure hydroponics met hydroton, UV-C, schoon systeem
 - In NFT goot geplaatst: 2026-05-16
+- 12/12 gestart op 2026-06-13; lichtlek gecorrigeerd op 2026-07-02.
+- CANNA-voedingsschema herstart als operationele week 9 op 2026-08-02.
 - pH crisis 2026-03-24: pH crashte naar 3.41 door ongecontroleerde A+B dosering
 
 ### Veiligheidssysteem
@@ -573,8 +576,10 @@ def read_dosing_today() -> dict | None:
         conn = sqlite3.connect(MYCODO_DB)
         cur = conn.cursor()
         cur.execute(
-            "SELECT custom_options FROM custom_controller WHERE unique_id=?",
-            (REGULATOR_UID,))
+            "SELECT custom_options FROM custom_controller "
+            "WHERE device IN (?, 'HYDROPONICS_REGULATOR') "
+            "ORDER BY is_activated DESC, CASE WHEN device=? THEN 0 ELSE 1 END LIMIT 1",
+            (CANNA_REGULATOR_TYPE, CANNA_REGULATOR_TYPE))
         row = cur.fetchone()
         conn.close()
         if not row:
@@ -586,7 +591,14 @@ def read_dosing_today() -> dict | None:
                 daily = json.loads(daily)
             if daily.get('date') == date.today().isoformat():
                 return daily
-        return {'ph_ml': 0, 'ec_a_ml': 0, 'ec_b_ml': 0}
+        return {
+            'ph_ml': 0,
+            'aqua_a_ml': 0,
+            'aqua_b_ml': 0,
+            'cannaboost_ml': 0,
+            'athena_ml': 0,
+            'pk_13_14_ml': 0,
+        }
     except Exception as e:
         log.warning("Dosing history read error: %s", e)
         return None
@@ -598,8 +610,10 @@ def read_regulator_config() -> dict | None:
         conn = sqlite3.connect(MYCODO_DB)
         cur = conn.cursor()
         cur.execute(
-            "SELECT name, device, custom_options FROM custom_controller WHERE unique_id=?",
-            (REGULATOR_UID,))
+            "SELECT name, device, custom_options FROM custom_controller "
+            "WHERE device IN (?, 'HYDROPONICS_REGULATOR') "
+            "ORDER BY is_activated DESC, CASE WHEN device=? THEN 0 ELSE 1 END LIMIT 1",
+            (CANNA_REGULATOR_TYPE, CANNA_REGULATOR_TYPE))
         row = cur.fetchone()
         conn.close()
         if not row:
@@ -621,6 +635,34 @@ def read_regulator_config() -> dict | None:
             if isinstance(value, str):
                 return value.strip().lower() in ('1', 'true', 'yes', 'on')
             return bool(value)
+
+        if row[1] == CANNA_REGULATOR_TYPE:
+            target_ec = _num(options.get('ec_target_total')) or 2100.0
+            hysteresis_ec = _num(options.get('ec_target_hysteresis')) or 100.0
+            relaunch = options.get('feeding_relaunch_date') or '2026-08-02'
+            start_week = int(_num(options.get('feeding_start_week')) or 9)
+            try:
+                grow_week = start_week + max(
+                    0, (date.today() - date.fromisoformat(relaunch)).days) // 7
+            except (TypeError, ValueError):
+                grow_week = start_week
+            return {
+                'name': row[0],
+                'device': row[1],
+                'setpoint_ec': target_ec,
+                'hysteresis_ec': hysteresis_ec,
+                'effective_setpoint_ec': target_ec,
+                'effective_hysteresis_ec': hysteresis_ec,
+                'range_ec_low': max(0.0, target_ec - hysteresis_ec),
+                'range_ec_high': target_ec + hysteresis_ec,
+                'ec_high_threshold': _num(options.get('ec_hard_stop')) or 2200.0,
+                'max_ec_before_dose': target_ec - (_num(options.get('ec_margin')) or 100.0),
+                'grow_start_date': options.get('grow_start_date') or GROW_START_DATE,
+                'grow_week': grow_week,
+                'ec_age_coupling_enabled': False,
+                'ec_age_pct': 100.0,
+                'ec_profile_mode': 'canna_relaunch',
+            }
 
         def _parse_ec_weekly_bands(raw_value: str | None) -> dict[int, tuple[float, float]]:
             raw_text = (raw_value or '').strip()
@@ -1520,8 +1562,11 @@ class ConversationManager:
             parts.append("")
             parts.append("### Vandaag Gedoseerd")
             parts.append(f"pH Down: {dosed.get('ph_ml', 0):.1f} ml")
-            parts.append(f"EC A (Sensi A): {dosed.get('ec_a_ml', 0):.1f} ml")
-            parts.append(f"EC B (Sensi B): {dosed.get('ec_b_ml', 0):.1f} ml")
+            parts.append(f"Aqua Flores A: {dosed.get('aqua_a_ml', dosed.get('ec_a_ml', 0)):.1f} ml")
+            parts.append(f"Aqua Flores B: {dosed.get('aqua_b_ml', dosed.get('ec_b_ml', 0)):.1f} ml")
+            parts.append(f"CANNABOOST: {dosed.get('cannaboost_ml', 0):.1f} ml")
+            parts.append(f"Athena Cleanse: {dosed.get('athena_ml', 0):.1f} ml")
+            parts.append(f"PK 13/14: {dosed.get('pk_13_14_ml', 0):.1f} ml")
 
         regulator = read_regulator_config()
         if regulator:
@@ -1529,7 +1574,9 @@ class ConversationManager:
             parts.append("### Actieve Regulatorconfig (live uit Mycodo DB)")
             if regulator.get('range_ec_low') is not None and regulator.get('range_ec_high') is not None:
                 profile_desc = (
-                    'live faseprofiel'
+                    'CANNA bloei-herstart'
+                    if regulator.get('ec_profile_mode') == 'canna_relaunch'
+                    else 'live faseprofiel'
                     if regulator.get('ec_profile_mode') == 'stage_profile'
                     else 'live weekschema'
                     if regulator.get('ec_profile_mode') == 'weekly_bands'

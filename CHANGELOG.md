@@ -1,3 +1,12 @@
+## Local Fork Checkpoint: 2026-10-04
+
+- Record pending Telegram grow bot changes that prefer CANNA controller records
+  and retain legacy read fallback, and synchronous graph column-width changes.
+- Add the existing local `.config` folder to the multi-root workspace definition;
+  its contents and credentials are not included in this repository.
+- This checkpoint publishes existing source changes only; it does not deploy the
+  bot, modify controller settings or exercise live hardware or messaging.
+
 ## 8.17.0 (Unreleased)
 
 This release has several updates that allow Mycodo to be installed and run on Debian Trixie (13) and Raspberry Pi OS Trixie (13). These operating system versions use Python 3.11 by default. If you are using an older operating system, you may not be able to upgrade to this version if you don't have at least Python 3.11, or some Python packages may not be able to upgrade properly. If you are using an older operating system and older Python version, it is recommended to stay on your current version of Mycodo that is compatible with your OS.

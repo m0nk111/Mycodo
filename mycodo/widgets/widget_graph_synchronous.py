@@ -1016,7 +1016,13 @@ WIDGET_INFORMATION = {
 
     plotOptions: {
       column: {
-        maxPointWidth: 3  /* limit the maximum column width. */
+        pointWidth: 10,      /* ~2.6 mm at 96 DPI */
+        maxPointWidth: 12,   /* never collapse to hairline bars */
+        grouping: false,     /* overlap columns at same timestamp to avoid 1px split bars */
+        groupPadding: 0.02,
+        pointPadding: 0.02,
+        borderWidth: 0,
+        minPointLength: 2
       },
       series:{
         states: {

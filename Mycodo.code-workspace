@@ -20,6 +20,9 @@
 		},
 		{
 			"path": "../HydroCodo"
+		},
+		{
+			"path": "../.config"
 		}
 	],
 	"settings": {}
