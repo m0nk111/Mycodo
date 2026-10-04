@@ -1,5 +1,7 @@
 # coding=utf-8
 import copy
+import statistics
+import time
 import traceback
 
 from flask_babel import lazy_gettext
@@ -125,6 +127,26 @@ INPUT_INFORMATION = {
         },
         {
             'type': 'message',
+            'default_value': 'Oversampling',
+        },
+        {
+            'id': 'oversample_count',
+            'type': 'integer',
+            'default_value': 15,
+            'constraints_pass': constraints_pass_positive_value,
+            'name': 'Samples per Measurement',
+            'phrase': 'Number of ADC readings per measurement (median + IQR filtering). Min 7.'
+        },
+        {
+            'id': 'calibration_samples',
+            'type': 'integer',
+            'default_value': 20,
+            'constraints_pass': constraints_pass_positive_value,
+            'name': 'Calibration Samples',
+            'phrase': 'Number of measurements to collect during calibration.'
+        },
+        {
+            'type': 'message',
             'default_value': 'Temperature Compensation',
         },
         {
@@ -245,6 +267,30 @@ INPUT_INFORMATION = {
             'name': 'EC cal data: T2 (internal)',
             'phrase': 'EC calibration data: EC'
         },
+        {
+            'type': 'new_line'
+        },
+        {
+            'id': 'ec_cal_v0',
+            'type': 'float',
+            'default_value': 0.0,
+            'name': 'EC cal data: V0 RO (internal)',
+            'phrase': 'EC calibration data: Voltage at RO water'
+        },
+        {
+            'id': 'ec_cal_ec0',
+            'type': 'float',
+            'default_value': 0.0,
+            'name': 'EC cal data: EC0 RO (internal)',
+            'phrase': 'EC calibration data: EC at RO water'
+        },
+        {
+            'id': 'ec_cal_t0',
+            'type': 'float',
+            'default_value': 25.0,
+            'name': 'EC cal data: T0 RO (internal)',
+            'phrase': 'EC calibration data: Temperature during RO calibration'
+        },
     ],
     'custom_commands': [
         {
@@ -281,9 +327,12 @@ INPUT_INFORMATION = {
         },
         {
             'type': 'message',
-            'default_value': """EC Calibration Actions: Place your probe in a solution of known EC.
-            Set the known EC value in the "Calibration standard EC" field, and press "Calibrate EC, slot 1".
-            Repeat with a second standard, and press "Calibrate EC, slot 2".
+            'default_value': """EC Calibration Actions: Optionally start with RO/deionised water for a zero-EC anchor point.
+            Set the EC of your RO water in "Calibration standard EC" (e.g. 90), place probe in RO water
+            and press "Calibrate EC, slot 0 (RO water)".
+            Then place in a solution of known EC, set the value in "Calibration standard EC", press slot 1.
+            Repeat with a second standard and press slot 2. Three-point piecewise interpolation
+            is used when the RO anchor is present; otherwise two-point linear is used.
             You don't need to change the values under "Custom Options"."""
         },
         {
@@ -292,6 +341,12 @@ INPUT_INFORMATION = {
             'default_value': 1413.0,
             'name': 'Calibration standard EC',
             'phrase': 'This is the nominal EC of the calibration standard, usually labelled on the bottle.'
+        },
+        {
+            'id': 'calibrate_ec_slot_ro',
+            'type': 'button',
+            'wait_for_return': True,
+            'name': 'Calibrate EC, slot 0 (RO water)'
         },
         {
             'id': 'calibrate_ec_slot_1',
@@ -348,6 +403,8 @@ class InputModule(AbstractInput):
 
         self.adc_channel_ph = None
         self.adc_channel_ec = None
+        self.oversample_count = None
+        self.calibration_samples = None
         self.temperature_comp_meas_device_id = None
         self.temperature_comp_meas_measurement_id = None
         self.max_age = None
@@ -359,6 +416,9 @@ class InputModule(AbstractInput):
         self.ph_cal_ph2 = None
         self.ph_cal_t2 = None
 
+        self.ec_cal_v0 = None
+        self.ec_cal_ec0 = None
+        self.ec_cal_t0 = None
         self.ec_cal_v1 = None
         self.ec_cal_ec1 = None
         self.ec_cal_t1 = None
@@ -395,7 +455,7 @@ class InputModule(AbstractInput):
             self.logger.error("Error while initializing: {}".format(err))
 
     def calibrate_ph(self, cal_slot, args_dict):
-        """Calibration helper method."""
+        """Calibrate pH using multisample averaging, then verify."""
         if 'calibration_ph' not in args_dict:
             self.logger.error("Cannot conduct calibration without a buffer pH value")
             return
@@ -405,35 +465,40 @@ class InputModule(AbstractInput):
                 args_dict['calibration_ph'], type(args_dict['calibration_ph'])))
             return
 
-        v = self.get_volt_data(int(self.adc_channel_ph))  # pH
+        v, std = self.get_volt_data_multisample(int(self.adc_channel_ph))
         temp = self.get_temp_data()
-        if temp is not None:
-            # Use measured temperature
-            t = temp
-        else:
-            # Assume room temperature of 25C
-            t = 25
-        self.logger.debug("Assigning voltage {} and temperature {} to pH {}".format(
-            v, t, args_dict['calibration_ph']))
+        t = temp if temp is not None else 25
+        self.logger.info(
+            "pH Cal slot {}: V={:.4f}V (σ={:.2f}mV), T={:.1f}°C, pH={}".format(
+                cal_slot, v, std * 1000, t, args_dict['calibration_ph']))
 
         if cal_slot == 1:
-            # set values currently being used
             self.ph_cal_v1 = v
             self.ph_cal_ph1 = args_dict['calibration_ph']
             self.ph_cal_t1 = t
-            # save values for next startup
             self.set_custom_option("ph_cal_v1", v)
             self.set_custom_option("ph_cal_ph1", args_dict['calibration_ph'])
             self.set_custom_option("ph_cal_t1", t)
         elif cal_slot == 2:
-            # set values currently being used
             self.ph_cal_v2 = v
             self.ph_cal_ph2 = args_dict['calibration_ph']
             self.ph_cal_t2 = t
-            # save values for next startup
             self.set_custom_option("ph_cal_v2", v)
             self.set_custom_option("ph_cal_ph2", args_dict['calibration_ph'])
             self.set_custom_option("ph_cal_t2", t)
+
+        # Verify: read with same method as get_measurement() and check result
+        time.sleep(1)
+        verify_v = self.get_volt_data(int(self.adc_channel_ph))
+        verify_ph = self.convert_volt_to_ph(verify_v, temp)
+        deviation = abs(verify_ph - args_dict['calibration_ph'])
+        self.logger.info(
+            "pH Cal VERIFY: V={:.4f}V => pH={:.3f} (target={}, deviation={:.3f})".format(
+                verify_v, verify_ph, args_dict['calibration_ph'], deviation))
+        if deviation > 0.1:
+            self.logger.warning(
+                "pH Cal: Verification deviation {:.3f} > 0.1. Consider recalibrating.".format(
+                    deviation))
 
     def calibrate_ph_slot_1(self, args_dict):
         """calibrate."""
@@ -454,7 +519,7 @@ class InputModule(AbstractInput):
             INPUT_INFORMATION['custom_options'], self.input_dev)
 
     def calibrate_ec(self, cal_slot, args_dict):
-        """Calibration helper method."""
+        """Calibrate EC using multisample averaging, then verify."""
         if 'calibration_ec' not in args_dict:
             self.logger.error("Cannot conduct calibration without a standard EC value")
             return
@@ -464,24 +529,27 @@ class InputModule(AbstractInput):
                 args_dict['calibration_ec'], type(args_dict['calibration_ec'])))
             return
 
-        v = self.get_volt_data(int(self.adc_channel_ec))  # EC
+        v, std = self.get_volt_data_multisample(int(self.adc_channel_ec))
         temp = self.get_temp_data()
-        if temp is not None:
-            # Use measured temperature
-            t = temp
-        else:
-            # Assume room temperature of 25C
-            t = 25
-        self.logger.debug("Assigning voltage {} and temperature {} to EC {}".format(
-            v, t, args_dict['calibration_ec']))
+        t = temp if temp is not None else 25
+        target_ec = args_dict['calibration_ec']
+        self.logger.info(
+            "EC Cal slot {}: V={:.4f}V (σ={:.2f}mV), T={:.1f}°C, EC={}".format(
+                cal_slot, v, std * 1000, t, target_ec))
 
-        # For future sessions
-        if cal_slot == 1:
-            # set values currently being used
+        if cal_slot == 0:
+            self.ec_cal_v0 = v
+            self.ec_cal_ec0 = target_ec
+            self.ec_cal_t0 = t
+            self.set_custom_option("ec_cal_v0", v)
+            self.set_custom_option("ec_cal_ec0", target_ec)
+            self.set_custom_option("ec_cal_t0", t)
+            self.logger.info(
+                "EC Cal slot 0: V={:.4f}V, T={:.1f}°C, EC={} µS/cm".format(v, t, target_ec))
+        elif cal_slot == 1:
             self.ec_cal_v1 = v
             self.ec_cal_ec1 = args_dict['calibration_ec']
             self.ec_cal_t1 = t
-            # save values for next startup
             self.set_custom_option("ec_cal_v1", v)
             self.set_custom_option("ec_cal_ec1", args_dict['calibration_ec'])
             self.set_custom_option("ec_cal_t1", t)
@@ -493,6 +561,27 @@ class InputModule(AbstractInput):
             self.set_custom_option("ec_cal_ec2", args_dict['calibration_ec'])
             self.set_custom_option("ec_cal_t2", t)
 
+        # Verify: only when both cal points are set (not needed for the RO anchor alone)
+        if cal_slot != 0 and self.ec_cal_v1 is not None and self.ec_cal_v2 is not None:
+            time.sleep(1)
+            verify_v = self.get_volt_data(int(self.adc_channel_ec))
+            verify_ec = self.convert_volt_to_ec(verify_v, temp)
+            if args_dict['calibration_ec'] > 0:
+                deviation_pct = abs(verify_ec - args_dict['calibration_ec']) / args_dict['calibration_ec'] * 100
+            else:
+                deviation_pct = 0
+            self.logger.info(
+                "EC Cal VERIFY: V={:.4f}V => EC={:.1f}µS/cm (target={}, deviation={:.1f}%)".format(
+                    verify_v, verify_ec, args_dict['calibration_ec'], deviation_pct))
+            if deviation_pct > 5:
+                self.logger.warning(
+                    "EC Cal: Verification deviation {:.1f}% > 5%. Consider recalibrating.".format(
+                        deviation_pct))
+
+    def calibrate_ec_slot_ro(self, args_dict):
+        """Calibrate EC slot 0: RO water anchor (uses entered EC value)."""
+        self.calibrate_ec(0, args_dict)
+
     def calibrate_ec_slot_1(self, args_dict):
         """calibrate."""
         self.calibrate_ec(1, args_dict)
@@ -502,6 +591,9 @@ class InputModule(AbstractInput):
         self.calibrate_ec(2, args_dict)
 
     def clear_ec_calibrate_slots(self, args_dict):
+        self.delete_custom_option("ec_cal_v0")
+        self.delete_custom_option("ec_cal_ec0")
+        self.delete_custom_option("ec_cal_t0")
         self.delete_custom_option("ec_cal_v1")
         self.delete_custom_option("ec_cal_ec1")
         self.delete_custom_option("ec_cal_t1")
@@ -510,6 +602,28 @@ class InputModule(AbstractInput):
         self.delete_custom_option("ec_cal_t2")
         self.setup_custom_options(
             INPUT_INFORMATION['custom_options'], self.input_dev)
+
+    @staticmethod
+    def _piecewise_interp(x, xp, fp):
+        """Piecewise linear interpolation (equivalent to numpy.interp).
+
+        Extrapolates linearly below xp[0] (floored at 0 for EC).
+        Clamps to fp[-1] above xp[-1].
+        xp must be sorted in ascending order.
+        """
+        if x <= xp[0]:
+            # Extrapolate using first segment slope, floor at 0
+            if len(xp) >= 2 and xp[1] != xp[0]:
+                slope = (fp[1] - fp[0]) / (xp[1] - xp[0])
+                return max(0.0, fp[0] + slope * (x - xp[0]))
+            return max(0.0, fp[0])
+        if x >= xp[-1]:
+            return fp[-1]
+        for i in range(len(xp) - 1):
+            if xp[i] <= x <= xp[i + 1]:
+                t = (x - xp[i]) / (xp[i + 1] - xp[i])
+                return fp[i] + t * (fp[i + 1] - fp[i])
+        return fp[-1]
 
     @staticmethod
     def nernst_correction(volt, temp):
@@ -568,14 +682,81 @@ class InputModule(AbstractInput):
         return out_value
 
     def get_volt_data(self, channel):
-        """Measure voltage at ADC channel."""
+        """Measure voltage with oversampling, IQR spike rejection, and median.
+
+        The ADS1115 on Raspberry Pi exhibits occasional extreme voltage spikes
+        (~1.5% of readings). Using median instead of mean makes the result
+        immune to these outliers.
+        """
         chan = self.analog_in(self.adc, channel)
         self.adc.gain = self.adc_gain
-        self.logger.debug("Channel {}: Gain {}, {} raw, {} volts".format(
-            channel, self.adc_gain, chan.value, chan.voltage))
-        volt_data = chan.voltage
+        num_samples = self.oversample_count if self.oversample_count else 15
 
+        readings = []
+        for _ in range(num_samples):
+            readings.append(chan.voltage)
+            time.sleep(0.01)
+
+        # IQR-based spike rejection (robust against extreme outliers)
+        if len(readings) >= 7:
+            sorted_r = sorted(readings)
+            q1 = sorted_r[len(sorted_r) // 4]
+            q3 = sorted_r[3 * len(sorted_r) // 4]
+            iqr = q3 - q1
+            fence = 3.0 * max(iqr, 0.002)  # 2mV minimum IQR floor
+            lower, upper = q1 - fence, q3 + fence
+            filtered = [r for r in readings if lower <= r <= upper]
+            spikes = len(readings) - len(filtered)
+            if spikes > 0:
+                self.logger.debug(
+                    "Ch{}: Removed {} spike(s) from {} readings".format(
+                        channel, spikes, num_samples))
+            if len(filtered) >= 5:
+                readings = filtered
+
+        volt_data = statistics.median(readings)
+        self.logger.debug(
+            "Ch{}: Gain {}, {:.4f}V (median of {})".format(
+                channel, self.adc_gain, volt_data, len(readings)))
         return volt_data
+
+    def get_volt_data_multisample(self, channel, num_samples=None):
+        """Collect multiple get_volt_data() readings for calibration.
+
+        Uses the same measurement method as get_measurement() to avoid
+        systematic offset between calibration and measurement.
+
+        Returns (median_voltage, std_deviation).
+        """
+        if num_samples is None:
+            num_samples = self.calibration_samples if self.calibration_samples else 20
+
+        self.logger.info("Calibration: collecting {} readings...".format(num_samples))
+        readings = []
+        for i in range(num_samples):
+            v = self.get_volt_data(channel)
+            readings.append(v)
+            if (i + 1) % 5 == 0:
+                avg = statistics.mean(readings)
+                std = statistics.stdev(readings) if len(readings) > 1 else 0
+                self.logger.info(
+                    "Calibration: {}/{}, avg={:.4f}V, σ={:.2f}mV".format(
+                        i + 1, num_samples, avg, std * 1000))
+            time.sleep(0.5)
+
+        result = statistics.median(readings)
+        std = statistics.stdev(readings) if len(readings) > 1 else 0
+
+        if std > 0.005:
+            self.logger.warning(
+                "Calibration: High variability σ={:.1f}mV (min={:.4f}V, max={:.4f}V). "
+                "Wait for probe to stabilize.".format(
+                    std * 1000, min(readings), max(readings)))
+
+        self.logger.info(
+            "Calibration result: {:.4f}V (median, σ={:.2f}mV, n={})".format(
+                result, std * 1000, len(readings)))
+        return result, std
 
     def convert_volt_to_ph(self, volt, temp):
         """Convert voltage to pH."""
@@ -596,20 +777,45 @@ class InputModule(AbstractInput):
         return ph
 
     def convert_volt_to_ec(self, volt, temp):
-        """Convert voltage to EC."""
-        # Calculate slope and intercept from calibration points.
-        self.slope = ((self.ec_cal_ec1 - self.ec_cal_ec2) /
-                      (self.viscosity_correction(self.ec_cal_v1, self.ec_cal_t1) -
-                       self.viscosity_correction(self.ec_cal_v2, self.ec_cal_t2)))
-        self.intercept = (self.ec_cal_ec1 -
-                          self.slope *
-                          self.viscosity_correction(self.ec_cal_v1, self.ec_cal_t1))
-        if temp is not None:
-            # Perform temperature corrections
-            ec = self.slope * self.viscosity_correction(volt, temp) + self.intercept
+        """Convert voltage to EC using piecewise linear interpolation.
+
+        When a RO/zero-EC anchor point (slot 0) is present, three-point
+        piecewise interpolation is used via numpy.interp(), which prevents
+        negative extrapolation below the lowest calibration point.
+        Without the anchor, the original two-point linear formula is used.
+        All voltages are temperature-corrected with viscosity_correction()
+        before interpolation.
+        """
+        t1 = self.ec_cal_t1 if self.ec_cal_t1 is not None else 25.0
+        t2 = self.ec_cal_t2 if self.ec_cal_t2 is not None else 25.0
+        v1_corr = self.viscosity_correction(self.ec_cal_v1, t1)
+        v2_corr = self.viscosity_correction(self.ec_cal_v2, t2)
+
+        v_meas = self.viscosity_correction(volt, temp) if temp is not None else volt
+
+        # Use 3-point piecewise interpolation when the RO anchor has been calibrated
+        if self.ec_cal_v0 is not None and self.ec_cal_v0 > 0.0:
+            t0 = self.ec_cal_t0 if self.ec_cal_t0 is not None else 25.0
+            v0_corr = self.viscosity_correction(self.ec_cal_v0, t0)
+            # Sort points by voltage to guarantee monotonic xp for numpy.interp
+            ec0 = self.ec_cal_ec0 if self.ec_cal_ec0 is not None else 0.0
+            points = sorted([
+                (v0_corr, ec0),
+                (v1_corr, self.ec_cal_ec1),
+                (v2_corr, self.ec_cal_ec2),
+            ])
+            xp = [p[0] for p in points]
+            fp = [p[1] for p in points]
+            # Pure-Python piecewise linear interpolation (no numpy needed)
+            ec = self._piecewise_interp(v_meas, xp, fp)
+            self.logger.debug(
+                "EC piecewise: V_corr={:.4f}V, xp={}, fp={} => {:.1f}µS/cm".format(
+                    v_meas, [round(x, 4) for x in xp], fp, ec))
         else:
-            # Don't perform temperature corrections
-            ec = self.slope * volt + self.intercept
+            # Fallback: original two-point linear formula
+            self.slope = (self.ec_cal_ec1 - self.ec_cal_ec2) / (v1_corr - v2_corr)
+            self.intercept = self.ec_cal_ec1 - self.slope * v1_corr
+            ec = self.slope * v_meas + self.intercept
 
         return ec
 
@@ -621,19 +827,33 @@ class InputModule(AbstractInput):
 
         self.return_dict = copy.deepcopy(measurements_dict)
 
-        # Store measurement for each channel
         if self.is_enabled(0):  # pH
-            self.value_set(
-                0,
-                self.convert_volt_to_ph(
-                    self.get_volt_data(int(self.adc_channel_ph)),
-                    self.get_temp_data()))
+            volt = self.get_volt_data(int(self.adc_channel_ph))
+
+            # Sanity Check for disconnected/loose wire (pH sensor range approx 0-3.0V)
+            # DFRobot pH 2.0 = 0V, pH 7.0 = 1.5V (typ), pH 14.0 = 3.0V.
+            # Isolator might push slightly higher, but >3.7V is almost certainly a fault.
+            if volt > 3.7:
+                 self.logger.error("pH Voltage {:.4f}V > 3.7V! Possible disconnect or hardware fault.".format(volt))
+                 self.value_set(0, None) # Return None to prevent erratic control behavior
+            else:
+                temp = self.get_temp_data()
+                ph = self.convert_volt_to_ph(volt, temp)
+                self.logger.debug("pH: {:.4f}V => {:.3f}".format(volt, ph))
+                self.value_set(0, ph)
 
         if self.is_enabled(1):  # EC
-            self.value_set(
-                1,
-                self.convert_volt_to_ec(
-                    self.get_volt_data(int(self.adc_channel_ec)),
-                    self.get_temp_data()))
+            volt = self.get_volt_data(int(self.adc_channel_ec))
+
+            # Sanity Check: DFRobot EC max output is ~3.4V.
+            # ADS1115 open input or short to 5V will read >4.0V on gain 1.
+            if volt > 3.7:
+                 self.logger.error("EC Voltage {:.4f}V > 3.7V! Possible disconnect or hardware fault.".format(volt))
+                 self.value_set(1, None) # Return None to prevent erratic control behavior
+            else:
+                temp = self.get_temp_data()
+                ec = self.convert_volt_to_ec(volt, temp)
+                self.logger.debug("EC: {:.4f}V => {:.1f}µS/cm".format(volt, ec))
+                self.value_set(1, ec)
 
         return self.return_dict

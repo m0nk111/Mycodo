@@ -1,3 +1,12 @@
+## Local Fork Checkpoint: 2026-10-04
+
+- Record pending Telegram grow bot changes that prefer CANNA controller records
+  and retain legacy read fallback, and synchronous graph column-width changes.
+- Add the existing local `.config` folder to the multi-root workspace definition;
+  its contents and credentials are not included in this repository.
+- This checkpoint publishes existing source changes only; it does not deploy the
+  bot, modify controller settings or exercise live hardware or messaging.
+
 ## 8.17.0 (Unreleased)
 
 This release has several updates that allow Mycodo to be installed and run on Debian Trixie (13) and Raspberry Pi OS Trixie (13). These operating system versions use Python 3.11 by default. If you are using an older operating system, you may not be able to upgrade to this version if you don't have at least Python 3.11, or some Python packages may not be able to upgrade properly. If you are using an older operating system and older Python version, it is recommended to stay on your current version of Mycodo that is compatible with your OS.
@@ -33,6 +42,21 @@ sudo service mycodoflask restart
  - Fix OpenWeather One Call API endpoint to use v3.0 ([#1429](https://github.com/kizniche/Mycodo/pull/1429))
  - Fix apt update not being run before installing apt packages dependencies
  - Fix camera library for different OS releases ([#1487](https://github.com/kizniche/Mycodo/pull/1487))
+ - Disable Guardian thinking mode for Telegram grow bot chat requests so assistant replies return in `message.content` instead of empty responses with reasoning-only payloads
+ - Inject the current run's latest grow-log events into the Telegram grow bot prompt so replies are grounded in the latest manual maintenance and status updates before answering
+ - Improve Telegram grow bot vision error reporting when Guardian rejects image input and fix a false error response after successful `/foto` analysis
+ - Correct Telegram grow bot week/phase tracking to start from the current plant's NFT gutter placement date
+ - Update Telegram grow bot grow-history lore to reflect the current v4 plant and prior v2/v3 failures
+ - Scope Telegram grow bot memory to the current grow run so stale April chat history does not leak into the current plant age/stage answers
+ - Inject the active regulator's live EC thresholds into the Telegram grow bot prompt so EC advice matches the real Mycodo controller configuration
+ - Compute the Telegram grow bot's regulator context from the effective age-coupled EC band so week-1 advice no longer uses mature-stage thresholds
+ - Soften the hydroponics regulator's week-2 and week-3 age-coupled EC ramp to 45% and 60% of the mature target for a more conservative early NFT transition
+ - Teach the Telegram grow bot to read the regulator's full-cycle weekly EC schedule so live advice follows the explicit week bands instead of only the legacy 4-week percentage ramp
+ - Let the hydroponics regulator stretch or compress the full-cycle EC schedule by seedling, veg, bloom, ripen, and flush week counts, while the Telegram grow bot mirrors the same auto/stage/explicit schedule resolution
+ - Broaden the Telegram grow bot's default full-cycle EC schedule so every non-flush band is at least 200 µS/cm wide, and treat both older narrower stored schedules as legacy so existing regulators adopt the safer bands instead of freezing stale defaults as custom overrides
+ - Align the Telegram grow bot's Guardian client with Guardian's documented blocking queue contract: derive queue/admin/request URLs from the configured chat endpoint, size the HTTP timeout from Guardian's advertised queue budget, poll queue phase while the request blocks, and log first-class `401/404/409/499` states instead of relying on duplicated legacy `429` retry helpers
+ - Retarget the hydroponics regulator's default Guardian advisor model from stale `gemma2-9b` to served alias `gemma4-e4b` so live and reset controllers do not fail immediately with `404 model_not_served`
+ - Allow the ADS1115 analog pH/EC input to store a measured RO-water EC anchor for slot 0 and extrapolate the first EC segment below the lowest calibration voltage instead of forcing a hard zero clamp
 
 ### Features
 
@@ -43,6 +67,8 @@ sudo service mycodoflask restart
  - Add Input: VEML7700 Ambient Light Sensor ([#1491](https://github.com/kizniche/Mycodo/pull/1491))
  - Add Input: LTR390 UV Light Sensor ([#1432](https://github.com/kizniche/Mycodo/pull/1432))
  - Add "message_extra" to input options
+ - Add Telegram grow bot check logging that appends `/status`, `/advies`, `/foto`, `/wortel`, `/trend`, and photo-upload summaries to the shared grow log
+ - Add the local `regulate_ph_ec_telegram.py` custom function scaffold and a multi-root `Mycodo.code-workspace` file for the active hydroponics development workspace
 
 ### Miscellaneous
 
